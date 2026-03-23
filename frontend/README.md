@@ -1,4 +1,4 @@
-# login-register-react
+# frontend
 
 This folder is now the primary implementation of the login, register, and dashboard flow.
 
@@ -19,5 +19,5 @@ The Vite `base` setting uses relative asset paths so the built output is easier 
 
 ## Project note
 
-- `login-register-react` is the main version to continue developing.
-- `../login-register-page` is a static HTML/CSS reference and should not be treated as the main source of truth.
+- `frontend` is the main version to continue developing.
+- The repository name is `auth-dashboard-app`.
