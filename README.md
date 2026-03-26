@@ -1,6 +1,11 @@
-# Login Register Project
+# auth-dashboard-app
 
 This repository now uses a React frontend as the main implementation of the authentication flow and dashboard preview.
+
+## Planning Docs
+
+- `docs/product-requirements.md`: product scope, modules, English UI direction, MVP boundaries
+- `docs/framework-roadmap.md`: recommended working order from framework to concept map to code
 
 ## Project Structure
 

@@ -1,14 +1,20 @@
-import { useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
+import OperationalModuleView from './OperationalViews';
 import {
   brandContent,
   getWorkspacePage,
   workspaceFooterLinks,
   workspaceNavigation,
-  type DashboardPage,
   type ModulePage,
   type Route,
   type WorkspaceRoute,
 } from './content';
+import { dashboardHeroMeta } from './dashboardMock';
+import { createInitialSelections, createInitialWorkspaceStore, isOperationalRoute } from './operations';
+
+const initialWorkspaceStore = createInitialWorkspaceStore();
+const initialOperationalSelections = createInitialSelections(initialWorkspaceStore);
+const WarehouseDashboardView = lazy(() => import('./WarehouseDashboardView'));
 
 type DashboardProps = {
   route: WorkspaceRoute;
@@ -32,7 +38,24 @@ function formatTime(now: Date) {
 
 export default function Dashboard({ route, onNavigate }: DashboardProps) {
   const [now, setNow] = useState(() => new Date());
+  const [workspaceStore, setWorkspaceStore] = useState(() => initialWorkspaceStore);
+  const [operationalSelections, setOperationalSelections] = useState(() => initialOperationalSelections);
   const page = getWorkspacePage(route);
+  const heroMetaBlocks =
+    page.kind === 'dashboard'
+      ? dashboardHeroMeta
+      : [
+          {
+            label: 'Workspace date',
+            value: formatDate(now),
+            detail: formatTime(now),
+          },
+          {
+            label: 'Image source',
+            value: 'Existing repo asset',
+            detail: 'home-bg.jpg + module pages',
+          },
+        ];
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -127,21 +150,30 @@ export default function Dashboard({ route, onNavigate }: DashboardProps) {
           </div>
 
           <div className="workspace-hero__meta">
-            <div className="hero-meta-block">
-              <span className="hero-meta-block__label">Last sync</span>
-              <strong>{formatDate(now)}</strong>
-              <span>{formatTime(now)}</span>
-            </div>
-            <div className="hero-meta-block">
-              <span className="hero-meta-block__label">Image source</span>
-              <strong>Existing repo asset</strong>
-              <span>{route === 'dashboard' ? 'home-bg.jpg' : 'home-bg.jpg + module pages'}</span>
-            </div>
+            {heroMetaBlocks.map((block) => (
+              <div className="hero-meta-block" key={block.label}>
+                <span className="hero-meta-block__label">{block.label}</span>
+                <strong>{block.value}</strong>
+                <span>{block.detail}</span>
+              </div>
+            ))}
           </div>
         </header>
 
         {page.kind === 'dashboard' ? (
-          <DashboardPageView page={page} onNavigate={onNavigate} />
+          <Suspense fallback={<DashboardLoadingState />}>
+            <WarehouseDashboardView page={page} onNavigate={onNavigate} />
+          </Suspense>
+        ) : isOperationalRoute(route) ? (
+          <OperationalModuleView
+            route={route}
+            page={page}
+            store={workspaceStore}
+            setStore={setWorkspaceStore}
+            selections={operationalSelections}
+            setSelections={setOperationalSelections}
+            onNavigate={onNavigate}
+          />
         ) : (
           <ModulePageView page={page} onNavigate={onNavigate} />
         )}
@@ -150,130 +182,17 @@ export default function Dashboard({ route, onNavigate }: DashboardProps) {
   );
 }
 
-function DashboardPageView({ page, onNavigate }: { page: DashboardPage; onNavigate: (route: Route) => void }) {
+function DashboardLoadingState() {
   return (
-    <>
-      <section className="summary-strip" aria-label="Dashboard metrics">
-        {page.metrics.map((item) => (
-          <div className="summary-item" key={item.label}>
-            <span className="summary-item__label">{item.label}</span>
-            <strong className="summary-item__value">{item.value}</strong>
-            <p className="summary-item__detail">{item.detail}</p>
-          </div>
-        ))}
-      </section>
-
-      <section className="workspace-layout workspace-layout--dashboard">
-        <section className="page-panel page-panel--main">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">Module map</p>
-              <h2>Left navigation modules</h2>
-            </div>
-            <p className="section-copy">
-              The workspace sidebar now follows the documented Dashboard, Warehouse Management, and Product Management structure.
-            </p>
-          </div>
-
-          <div className="module-groups">
-            {page.moduleHighlights.map((group) => (
-              <section className="module-group-panel" key={group.label}>
-                <div className="module-group-panel__header">
-                  <p className="section-kicker">{group.label}</p>
-                  <h3>{group.label}</h3>
-                </div>
-
-                <div className="module-group-panel__items">
-                  {group.items.map((item) => (
-                    <button
-                      key={`${group.label}-${item.label}`}
-                      type="button"
-                      className="module-link"
-                      onClick={() => onNavigate(item.route)}
-                    >
-                      <span className="module-link__label">{item.label}</span>
-                      <span className="module-link__detail">{item.detail}</span>
-                    </button>
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
-        </section>
-
-        <aside className="page-panel page-panel--rail">
-          {page.coverage.map((block) => (
-            <section className="rail-block" key={block.title}>
-              <div className="section-heading section-heading--stack">
-                <div>
-                  <p className="section-kicker">{block.title}</p>
-                  <h2>{block.title}</h2>
-                </div>
-              </div>
-
-              <ul className="mono-list">
-                {block.items.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </section>
-          ))}
-
-          <section className="rail-block">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">Quick actions</p>
-                <h2>Jump into modules</h2>
-              </div>
-            </div>
-
-            <div className="button-stack">
-              {page.actions.map((action) => (
-                <button
-                  key={action.label}
-                  className={action.tone === 'primary' ? 'primary-button' : 'secondary-button'}
-                  type="button"
-                  onClick={() => onNavigate(action.route)}
-                >
-                  {action.label}
-                </button>
-              ))}
-            </div>
-          </section>
-        </aside>
-      </section>
-
-      <section className="page-panel">
-        <div className="section-heading">
-          <div>
-            <p className="section-kicker">Page coverage</p>
-            <h2>{page.spotlight.title}</h2>
-          </div>
-          <p className="section-copy">{page.spotlight.description}</p>
+    <section className="page-panel">
+      <div className="section-heading section-heading--stack">
+        <div>
+          <p className="section-kicker">Dashboard</p>
+          <h2>Loading operations surface</h2>
         </div>
-
-        <div className="table-wrap">
-          <table className="orders-table">
-            <thead>
-              <tr>
-                {page.spotlight.columns.map((column) => (
-                  <th key={column.key}>{column.label}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {page.spotlight.rows.map((row) => (
-                <tr key={`${row.module}-${row.entity}`}>
-                  {page.spotlight.columns.map((column) => (
-                    <td key={column.key}>{row[column.key]}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </>
+        <p className="section-copy">Preparing KPI cards, warning panels, and the 7-day inbound/outbound trend.</p>
+      </div>
+    </section>
   );
 }
 

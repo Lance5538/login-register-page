@@ -8,8 +8,12 @@ export type WorkspaceRoute =
   | 'dashboard'
   | 'inbound-list'
   | 'inbound-detail'
+  | 'inbound-create'
+  | 'inbound-edit'
   | 'outbound-list'
   | 'outbound-detail'
+  | 'outbound-create'
+  | 'outbound-edit'
   | 'inventory-list'
   | 'inventory-detail'
   | 'stocktaking-list'
@@ -18,8 +22,12 @@ export type WorkspaceRoute =
   | 'logistics-documents-detail'
   | 'product-list'
   | 'product-detail'
+  | 'product-create'
+  | 'product-edit'
   | 'category-list'
-  | 'category-detail';
+  | 'category-detail'
+  | 'category-create'
+  | 'category-edit';
 
 export type Route = AuthRoute | WorkspaceRoute;
 export type AuthVariant = AuthRoute;
@@ -164,7 +172,7 @@ export type DashboardPage = {
 };
 
 export type ModulePage = {
-  kind: 'list' | 'detail';
+  kind: 'list' | 'detail' | 'form';
   navKey: Exclude<NavKey, 'dashboard'>;
   section: string;
   title: string;
@@ -175,6 +183,7 @@ export type ModulePage = {
   summary: SummaryItem[];
   fieldBlueprint: FieldBlueprintGroup[];
   actions: PageAction[];
+  formMode?: 'create' | 'edit';
   columns?: TableColumn[];
   rows?: TableRow[];
   detailGroups?: DetailGroup[];
@@ -188,8 +197,12 @@ export const routeOrder: Route[] = [
   'dashboard',
   'inbound-list',
   'inbound-detail',
+  'inbound-create',
+  'inbound-edit',
   'outbound-list',
   'outbound-detail',
+  'outbound-create',
+  'outbound-edit',
   'inventory-list',
   'inventory-detail',
   'stocktaking-list',
@@ -198,8 +211,12 @@ export const routeOrder: Route[] = [
   'logistics-documents-detail',
   'product-list',
   'product-detail',
+  'product-create',
+  'product-edit',
   'category-list',
   'category-detail',
+  'category-create',
+  'category-edit',
 ];
 
 export const brandContent = {
@@ -222,6 +239,38 @@ const finalEntities = [
   'Logistics Record',
   'Document',
 ];
+
+const modulesWithOperationalForms = new Set<Exclude<NavKey, 'dashboard'>>(['product', 'category', 'inbound', 'outbound']);
+
+function getModuleCreateRoute(key: Exclude<NavKey, 'dashboard'>): WorkspaceRoute | undefined {
+  switch (key) {
+    case 'inbound':
+      return 'inbound-create';
+    case 'outbound':
+      return 'outbound-create';
+    case 'product':
+      return 'product-create';
+    case 'category':
+      return 'category-create';
+    default:
+      return undefined;
+  }
+}
+
+function getModuleEditRoute(key: Exclude<NavKey, 'dashboard'>): WorkspaceRoute | undefined {
+  switch (key) {
+    case 'inbound':
+      return 'inbound-edit';
+    case 'outbound':
+      return 'outbound-edit';
+    case 'product':
+      return 'product-edit';
+    case 'category':
+      return 'category-edit';
+    default:
+      return undefined;
+  }
+}
 
 const moduleDefinitions: ModuleDefinition[] = [
   {
@@ -1044,7 +1093,9 @@ export const workspaceNavigation: NavigationGroup[] = [
         key: module.key,
         label: module.label,
         route: module.listRoute,
-        detail: `${module.listTitle} / ${module.detailTitle}`,
+        detail: modulesWithOperationalForms.has(module.key)
+          ? `${module.listTitle} / ${module.detailTitle} / Forms`
+          : `${module.listTitle} / ${module.detailTitle}`,
       })),
   })),
 ];
@@ -1071,7 +1122,8 @@ export const authContent: Record<AuthVariant, AuthScreenContent> = {
       },
       {
         title: 'Final page list',
-        description: 'List and detail skeletons are available for inbound, outbound, inventory, stocktaking, logistics / documents, product, and category.',
+        description:
+          'Operational list, detail, and create/edit flows are available for inbound, outbound, product, and category.',
       },
       {
         title: 'Existing imagery',
@@ -1081,8 +1133,8 @@ export const authContent: Record<AuthVariant, AuthScreenContent> = {
     stats: [
       {
         label: 'Final pages',
-        value: '17',
-        detail: 'Login, register, dashboard, and the documented list/detail pages.',
+        value: '25',
+        detail: 'Login, register, dashboard, documented list/detail pages, and eight operational form routes.',
       },
       {
         label: 'Entities',
@@ -1128,7 +1180,7 @@ export const authContent: Record<AuthVariant, AuthScreenContent> = {
     supportItems: [
       {
         title: 'Page skeleton ready',
-        description: 'The app now includes the list/detail routes called out in final-page-list.md.',
+        description: 'The app now includes the documented list/detail routes plus create/edit forms for the operational modules in scope.',
       },
       {
         title: 'Field blueprint visible',
@@ -1153,7 +1205,7 @@ export const authContent: Record<AuthVariant, AuthScreenContent> = {
       {
         label: 'Detail views',
         value: '7',
-        detail: 'Each documented module now has a matching sample detail page.',
+        detail: 'Each documented module still has a matching detail page alongside the new operational forms.',
       },
     ],
     primaryAction: 'Create Account',
@@ -1205,17 +1257,47 @@ export function isAuthRoute(route: Route): route is AuthRoute {
 }
 
 function buildTabs(module: ModuleDefinition): PageTab[] {
-  return [
+  const tabs: PageTab[] = [
     { label: 'List', route: module.listRoute },
     { label: 'Detail', route: module.detailRoute },
   ];
+
+  const createRoute = getModuleCreateRoute(module.key);
+  const editRoute = getModuleEditRoute(module.key);
+
+  if (createRoute && editRoute) {
+    tabs.push(
+      { label: 'New', route: createRoute },
+      { label: 'Edit', route: editRoute },
+    );
+  }
+
+  return tabs;
 }
 
 function buildActions(module: ModuleDefinition, kind: 'list' | 'detail'): PageAction[] {
   if (kind === 'list') {
+    const createRoute = getModuleCreateRoute(module.key);
+
+    if (createRoute) {
+      return [
+        { label: `Create ${module.label}`, route: createRoute, tone: 'primary' },
+        { label: `Open ${module.label} Detail`, route: module.detailRoute, tone: 'secondary' },
+      ];
+    }
+
     return [
       { label: `Open ${module.label} Detail`, route: module.detailRoute, tone: 'primary' },
       { label: 'Back to Dashboard', route: 'dashboard', tone: 'secondary' },
+    ];
+  }
+
+  const editRoute = getModuleEditRoute(module.key);
+
+  if (editRoute) {
+    return [
+      { label: `Edit ${module.label}`, route: editRoute, tone: 'primary' },
+      { label: `Back to ${module.label} List`, route: module.listRoute, tone: 'secondary' },
     ];
   }
 
@@ -1224,6 +1306,147 @@ function buildActions(module: ModuleDefinition, kind: 'list' | 'detail'): PageAc
     { label: 'Back to Dashboard', route: 'dashboard', tone: 'secondary' },
   ];
 }
+
+type OperationalFormConfig = {
+  route: WorkspaceRoute;
+  moduleKey: 'inbound' | 'outbound' | 'product' | 'category';
+  mode: 'create' | 'edit';
+  title: string;
+  description: string;
+  summary: SummaryItem[];
+  actions: PageAction[];
+};
+
+const operationalFormConfigs: OperationalFormConfig[] = [
+  {
+    route: 'product-create',
+    moduleKey: 'product',
+    mode: 'create',
+    title: 'Create Product',
+    description: 'Set up a new product record with only the required master-data fields, linked warehouse context, and notes for the operation team.',
+    summary: [
+      { label: 'Mode', value: 'Create', detail: 'Start a new master product record.' },
+      { label: 'Required now', value: '03', detail: 'Name, category, and warehouse are enough to save a usable draft.' },
+      { label: 'Auto-fill', value: 'Code + Unit', detail: 'Product code and unit can be suggested from linked category context.' },
+    ],
+    actions: [
+      { label: 'Back to Product List', route: 'product-list', tone: 'primary' },
+      { label: 'Back to Dashboard', route: 'dashboard', tone: 'secondary' },
+    ],
+  },
+  {
+    route: 'product-edit',
+    moduleKey: 'product',
+    mode: 'edit',
+    title: 'Edit Product',
+    description: 'Update an existing product record with faster linked selections, inline validation, and notes that stay in local mock state.',
+    summary: [
+      { label: 'Mode', value: 'Edit', detail: 'Adjust the selected product record in place.' },
+      { label: 'Linked data', value: 'Category + Warehouse', detail: 'Linked selections stay visible while editing the product master data.' },
+      { label: 'Result', value: 'Local state', detail: 'Changes update the mocked product list and detail view immediately.' },
+    ],
+    actions: [
+      { label: 'Review Product Detail', route: 'product-detail', tone: 'primary' },
+      { label: 'Back to Product List', route: 'product-list', tone: 'secondary' },
+    ],
+  },
+  {
+    route: 'category-create',
+    moduleKey: 'category',
+    mode: 'create',
+    title: 'Create Category',
+    description: 'Capture a new category quickly with a generated code, short description, and only the minimum fields needed to support product assignment.',
+    summary: [
+      { label: 'Mode', value: 'Create', detail: 'Open a new category setup flow.' },
+      { label: 'Required now', value: '01', detail: 'Category name is enough to generate a usable draft.' },
+      { label: 'Auto-fill', value: 'Code', detail: 'Category code is suggested from the entered name and can still be adjusted.' },
+    ],
+    actions: [
+      { label: 'Back to Category List', route: 'category-list', tone: 'primary' },
+      { label: 'Back to Dashboard', route: 'dashboard', tone: 'secondary' },
+    ],
+  },
+  {
+    route: 'category-edit',
+    moduleKey: 'category',
+    mode: 'edit',
+    title: 'Edit Category',
+    description: 'Update the selected category with inline validation, impact context, and notes without leaving the current product management flow.',
+    summary: [
+      { label: 'Mode', value: 'Edit', detail: 'Refine an existing category record.' },
+      { label: 'Product links', value: 'Visible', detail: 'The form keeps the current category context visible while making changes.' },
+      { label: 'Result', value: 'Local state', detail: 'Saved changes update the mocked category and related product options immediately.' },
+    ],
+    actions: [
+      { label: 'Review Category Detail', route: 'category-detail', tone: 'primary' },
+      { label: 'Back to Category List', route: 'category-list', tone: 'secondary' },
+    ],
+  },
+  {
+    route: 'inbound-create',
+    moduleKey: 'inbound',
+    mode: 'create',
+    title: 'Create Inbound',
+    description: 'Capture an inbound order with a warehouse header, supplier information, and receipt line items that auto-fill product details when selected.',
+    summary: [
+      { label: 'Mode', value: 'Create', detail: 'Start a new inbound receipt header and line items.' },
+      { label: 'Required now', value: '03', detail: 'Warehouse, supplier, and one line item are enough for a draft.' },
+      { label: 'Action path', value: 'Draft or Confirm', detail: 'Save the inbound as a draft or confirm the receipt directly from the form.' },
+    ],
+    actions: [
+      { label: 'Back to Inbound List', route: 'inbound-list', tone: 'primary' },
+      { label: 'Back to Dashboard', route: 'dashboard', tone: 'secondary' },
+    ],
+  },
+  {
+    route: 'inbound-edit',
+    moduleKey: 'inbound',
+    mode: 'edit',
+    title: 'Edit Inbound',
+    description: 'Adjust the selected inbound order with inline validation, auto-filled product context, and line-item edits that stay in local state.',
+    summary: [
+      { label: 'Mode', value: 'Edit', detail: 'Update the selected inbound order.' },
+      { label: 'Structure', value: 'Header + Lines', detail: 'Receipt header fields stay separate from received item lines for faster scanning.' },
+      { label: 'Result', value: 'Live queue', detail: 'Saved changes update the mocked inbound queue and detail view immediately.' },
+    ],
+    actions: [
+      { label: 'Review Inbound Detail', route: 'inbound-detail', tone: 'primary' },
+      { label: 'Back to Inbound List', route: 'inbound-list', tone: 'secondary' },
+    ],
+  },
+  {
+    route: 'outbound-create',
+    moduleKey: 'outbound',
+    mode: 'create',
+    title: 'Create Outbound',
+    description: 'Plan a shipment with a warehouse header, destination details, and line items that reuse linked product context to prevent picking errors.',
+    summary: [
+      { label: 'Mode', value: 'Create', detail: 'Start a new outbound shipment record.' },
+      { label: 'Required now', value: '03', detail: 'Warehouse, destination, and one product line are enough to save a draft.' },
+      { label: 'Action path', value: 'Draft or Confirm', detail: 'Save the shipment as a draft or confirm shipment directly from the form.' },
+    ],
+    actions: [
+      { label: 'Back to Outbound List', route: 'outbound-list', tone: 'primary' },
+      { label: 'Back to Dashboard', route: 'dashboard', tone: 'secondary' },
+    ],
+  },
+  {
+    route: 'outbound-edit',
+    moduleKey: 'outbound',
+    mode: 'edit',
+    title: 'Edit Outbound',
+    description: 'Update the selected outbound order with linked destination context, line-item validation, and shipment confirmation controls.',
+    summary: [
+      { label: 'Mode', value: 'Edit', detail: 'Update the selected outbound shipment.' },
+      { label: 'Structure', value: 'Header + Lines', detail: 'Shipment header details remain separate from product lines for fast review.' },
+      { label: 'Result', value: 'Live queue', detail: 'Saved changes update the mocked outbound queue and detail view immediately.' },
+    ],
+    actions: [
+      { label: 'Review Outbound Detail', route: 'outbound-detail', tone: 'primary' },
+      { label: 'Back to Outbound List', route: 'outbound-list', tone: 'secondary' },
+    ],
+  },
+];
 
 const spotlightRows = moduleDefinitions.map((module) => ({
   module: module.label,
@@ -1236,30 +1459,30 @@ export const dashboardPage: DashboardPage = {
   kind: 'dashboard',
   navKey: 'dashboard',
   section: 'Dashboard',
-  title: 'Operations overview',
+  title: 'Warehouse operations overview',
   description:
-    'The workspace now follows the execution docs: a left-side module tree, documented list/detail pages, and field blueprints tied back to the final entity and field lists.',
+    'Monitor stock position, today’s warehouse movement, space utilization, category mix, and cross-site warning queues from one management-ready operations surface.',
   heroImage: homeBg,
   metrics: [
     {
-      label: 'Final pages',
-      value: '17',
-      detail: 'Every page from final-page-list.md is represented in the route structure.',
+      label: 'Total Inventory Quantity',
+      value: '128,760',
+      detail: 'On-hand stock currently tracked across the Northline warehouse network.',
     },
     {
-      label: 'Final entities',
-      value: '10',
-      detail: 'Entity coverage follows final-entity-list.md and the documented module map.',
+      label: 'Today Inbound Quantity',
+      value: '1,353',
+      detail: 'Confirmed receipt quantity posted into storage today.',
     },
     {
-      label: 'Warehouse modules',
-      value: '5',
-      detail: 'Inbound, outbound, inventory, stocktaking, and logistics / documents.',
+      label: 'Today Outbound Quantity',
+      value: '1,090',
+      detail: 'Units released from picking, packing, and shipment today.',
     },
     {
-      label: 'Product modules',
-      value: '2',
-      detail: 'Product and category pages are included in Product Management.',
+      label: 'Warehouse Space Utilization Rate',
+      value: '81.6%',
+      detail: 'Current occupied storage capacity across live warehouse zones.',
     },
   ],
   moduleHighlights: workspaceNavigation,
@@ -1285,14 +1508,39 @@ export const dashboardPage: DashboardPage = {
     rows: spotlightRows,
   },
   actions: [
-    { label: 'Open Inbound List', route: 'inbound-list', tone: 'primary' },
-    { label: 'Open Product List', route: 'product-list', tone: 'secondary' },
+    { label: 'Inspect Inventory', route: 'inventory-list', tone: 'primary' },
+    { label: 'Open Inbound Queue', route: 'inbound-list', tone: 'secondary' },
   ],
 };
 
 export function getWorkspacePage(route: WorkspaceRoute): WorkspacePage {
   if (route === 'dashboard') {
     return dashboardPage;
+  }
+
+  const formConfig = operationalFormConfigs.find((item) => item.route === route);
+
+  if (formConfig) {
+    const module = moduleDefinitions.find((item) => item.key === formConfig.moduleKey);
+
+    if (!module) {
+      return dashboardPage;
+    }
+
+    return {
+      kind: 'form',
+      formMode: formConfig.mode,
+      navKey: module.key,
+      section: module.group,
+      title: formConfig.title,
+      description: formConfig.description,
+      heroImage: homeBg,
+      entityLabel: module.entityLabel,
+      tabs: buildTabs(module),
+      summary: formConfig.summary,
+      fieldBlueprint: module.fieldBlueprint,
+      actions: formConfig.actions,
+    };
   }
 
   const module = moduleDefinitions.find((item) => item.listRoute === route || item.detailRoute === route);
