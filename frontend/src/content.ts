@@ -279,13 +279,11 @@ const moduleDefinitions: ModuleDefinition[] = [
     label: 'Inbound',
     listRoute: 'inbound-list',
     detailRoute: 'inbound-detail',
-    listTitle: 'Inbound List',
-    detailTitle: 'Inbound Detail',
+    listTitle: 'Inbound Queue',
+    detailTitle: 'Inbound Order',
     entityLabel: 'Inbound Order',
-    listDescription:
-      'Track inbound receipts, warehouse assignments, supplier context, and confirmation timing from the Warehouse Management module.',
-    detailDescription:
-      'Inspect one inbound order record with warehouse, supplier, operator, and confirmation fields aligned to the execution docs.',
+    listDescription: 'Track live receipts by warehouse, supplier, and status. Select one order to review or continue processing.',
+    detailDescription: 'Review the selected receipt header, product lines, and confirmation state.',
     listSummary: [
       {
         label: 'Open receipts',
@@ -391,13 +389,11 @@ const moduleDefinitions: ModuleDefinition[] = [
     label: 'Outbound',
     listRoute: 'outbound-list',
     detailRoute: 'outbound-detail',
-    listTitle: 'Outbound List',
-    detailTitle: 'Outbound Detail',
+    listTitle: 'Outbound Queue',
+    detailTitle: 'Outbound Order',
     entityLabel: 'Outbound Order',
-    listDescription:
-      'Monitor outbound shipments, destination context, operator ownership, and current dispatch status from one queue.',
-    detailDescription:
-      'Review one outbound order record with destination, warehouse, shipping status, and confirmation timing aligned to the documented fields.',
+    listDescription: 'Track live shipments by warehouse, destination, and status. Select one order to review or continue processing.',
+    detailDescription: 'Review the selected shipment header, product lines, and dispatch state.',
     listSummary: [
       {
         label: 'Outbound today',
@@ -503,13 +499,11 @@ const moduleDefinitions: ModuleDefinition[] = [
     label: 'Inventory',
     listRoute: 'inventory-list',
     detailRoute: 'inventory-detail',
-    listTitle: 'Inventory List',
-    detailTitle: 'Inventory Detail',
+    listTitle: 'Inventory Control',
+    detailTitle: 'Inventory Record',
     entityLabel: 'Inventory Record',
-    listDescription:
-      'View current stock by product, warehouse, and location with on-hand, reserved, and low-stock thresholds visible in one list.',
-    detailDescription:
-      'Inspect one inventory record with warehouse, location, on-hand, reserved, and low-stock values aligned to the field document.',
+    listDescription: 'Track stock by SKU, warehouse, and location with on-hand, reserved, and threshold values in one workspace.',
+    detailDescription: 'Review the selected inventory position, reservation level, and threshold status.',
     listSummary: [
       {
         label: 'Tracked SKUs',
@@ -619,13 +613,11 @@ const moduleDefinitions: ModuleDefinition[] = [
     label: 'Stocktaking',
     listRoute: 'stocktaking-list',
     detailRoute: 'stocktaking-detail',
-    listTitle: 'Stocktaking List',
-    detailTitle: 'Stocktaking Detail',
+    listTitle: 'Stocktaking Queue',
+    detailTitle: 'Stocktaking Task',
     entityLabel: 'Stocktaking Task',
-    listDescription:
-      'Follow planned stocktaking work by warehouse, task status, ownership, and completion timing in one operational list.',
-    detailDescription:
-      'Inspect one stocktaking task record with planned date, completion timing, operator ownership, and difference review context.',
+    listDescription: 'Track planned counting work by warehouse, task status, ownership, and completion timing.',
+    detailDescription: 'Review the selected counting task, due window, and variance context.',
     listSummary: [
       {
         label: 'Open tasks',
@@ -730,13 +722,11 @@ const moduleDefinitions: ModuleDefinition[] = [
     label: 'Logistics / Documents',
     listRoute: 'logistics-documents-list',
     detailRoute: 'logistics-documents-detail',
-    listTitle: 'Logistics / Documents List',
-    detailTitle: 'Logistics / Documents Detail',
+    listTitle: 'Logistics Desk',
+    detailTitle: 'Logistics Record',
     entityLabel: 'Logistics Record / Document',
-    listDescription:
-      'Track shipment records and linked documents together, since the execution docs define a combined Logistics / Documents page pair.',
-    detailDescription:
-      'Inspect one shipment record alongside its linked document metadata, order references, carrier details, and issue state.',
+    listDescription: 'Track shipment records and linked documents together from one operational desk.',
+    detailDescription: 'Review the selected shipment, linked document, carrier details, and current issue state.',
     listSummary: [
       {
         label: 'Shipments',
@@ -859,13 +849,11 @@ const moduleDefinitions: ModuleDefinition[] = [
     label: 'Product',
     listRoute: 'product-list',
     detailRoute: 'product-detail',
-    listTitle: 'Product List',
-    detailTitle: 'Product Detail',
+    listTitle: 'Product Master',
+    detailTitle: 'Product Record',
     entityLabel: 'Product',
-    listDescription:
-      'Maintain product master records with category, warehouse, unit, status, and updated timing visible in one product list.',
-    detailDescription:
-      'Inspect one product master record with category, warehouse, unit, and status fields aligned to the basic field list.',
+    listDescription: 'Manage live SKU records with category, warehouse, unit, and status visible in one workspace.',
+    detailDescription: 'Review the selected SKU, linked category, warehouse assignment, and current status.',
     listSummary: [
       {
         label: 'Products',
@@ -976,13 +964,11 @@ const moduleDefinitions: ModuleDefinition[] = [
     label: 'Category',
     listRoute: 'category-list',
     detailRoute: 'category-detail',
-    listTitle: 'Category List',
-    detailTitle: 'Category Detail',
+    listTitle: 'Category Structure',
+    detailTitle: 'Category Record',
     entityLabel: 'Product Category',
-    listDescription:
-      'Maintain product category records with category code, description, and status aligned to the Product Management module.',
-    detailDescription:
-      'Inspect one product category record with code, name, description, and status fields aligned to the execution docs.',
+    listDescription: 'Manage category naming, description, and status with linked product coverage visible from one workspace.',
+    detailDescription: 'Review the selected category, linked products, and current status.',
     listSummary: [
       {
         label: 'Categories',
@@ -1322,8 +1308,8 @@ const operationalFormConfigs: OperationalFormConfig[] = [
     route: 'product-create',
     moduleKey: 'product',
     mode: 'create',
-    title: 'Create Product',
-    description: 'Set up a new product record with only the required master-data fields, linked warehouse context, and notes for the operation team.',
+    title: 'New Product',
+    description: 'Create a SKU with name, category, warehouse, and linked code/unit suggestions.',
     summary: [
       { label: 'Mode', value: 'Create', detail: 'Start a new master product record.' },
       { label: 'Required now', value: '03', detail: 'Name, category, and warehouse are enough to save a usable draft.' },
@@ -1339,7 +1325,7 @@ const operationalFormConfigs: OperationalFormConfig[] = [
     moduleKey: 'product',
     mode: 'edit',
     title: 'Edit Product',
-    description: 'Update an existing product record with faster linked selections, inline validation, and notes that stay in local mock state.',
+    description: 'Update the selected SKU and keep category and warehouse context in view.',
     summary: [
       { label: 'Mode', value: 'Edit', detail: 'Adjust the selected product record in place.' },
       { label: 'Linked data', value: 'Category + Warehouse', detail: 'Linked selections stay visible while editing the product master data.' },
@@ -1354,8 +1340,8 @@ const operationalFormConfigs: OperationalFormConfig[] = [
     route: 'category-create',
     moduleKey: 'category',
     mode: 'create',
-    title: 'Create Category',
-    description: 'Capture a new category quickly with a generated code, short description, and only the minimum fields needed to support product assignment.',
+    title: 'New Category',
+    description: 'Create a category with name, code, description, and status.',
     summary: [
       { label: 'Mode', value: 'Create', detail: 'Open a new category setup flow.' },
       { label: 'Required now', value: '01', detail: 'Category name is enough to generate a usable draft.' },
@@ -1371,7 +1357,7 @@ const operationalFormConfigs: OperationalFormConfig[] = [
     moduleKey: 'category',
     mode: 'edit',
     title: 'Edit Category',
-    description: 'Update the selected category with inline validation, impact context, and notes without leaving the current product management flow.',
+    description: 'Update the selected category and keep linked product coverage in view.',
     summary: [
       { label: 'Mode', value: 'Edit', detail: 'Refine an existing category record.' },
       { label: 'Product links', value: 'Visible', detail: 'The form keeps the current category context visible while making changes.' },
@@ -1386,8 +1372,8 @@ const operationalFormConfigs: OperationalFormConfig[] = [
     route: 'inbound-create',
     moduleKey: 'inbound',
     mode: 'create',
-    title: 'Create Inbound',
-    description: 'Capture an inbound order with a warehouse header, supplier information, and receipt line items that auto-fill product details when selected.',
+    title: 'New Inbound Order',
+    description: 'Create a receipt with warehouse, supplier, and product lines. Confirm only after quantity review.',
     summary: [
       { label: 'Mode', value: 'Create', detail: 'Start a new inbound receipt header and line items.' },
       { label: 'Required now', value: '03', detail: 'Warehouse, supplier, and one line item are enough for a draft.' },
@@ -1402,8 +1388,8 @@ const operationalFormConfigs: OperationalFormConfig[] = [
     route: 'inbound-edit',
     moduleKey: 'inbound',
     mode: 'edit',
-    title: 'Edit Inbound',
-    description: 'Adjust the selected inbound order with inline validation, auto-filled product context, and line-item edits that stay in local state.',
+    title: 'Edit Inbound Order',
+    description: 'Update the selected receipt and confirm it when warehouse review is complete.',
     summary: [
       { label: 'Mode', value: 'Edit', detail: 'Update the selected inbound order.' },
       { label: 'Structure', value: 'Header + Lines', detail: 'Receipt header fields stay separate from received item lines for faster scanning.' },
@@ -1418,8 +1404,8 @@ const operationalFormConfigs: OperationalFormConfig[] = [
     route: 'outbound-create',
     moduleKey: 'outbound',
     mode: 'create',
-    title: 'Create Outbound',
-    description: 'Plan a shipment with a warehouse header, destination details, and line items that reuse linked product context to prevent picking errors.',
+    title: 'New Outbound Order',
+    description: 'Create a shipment with warehouse, destination, and product lines. Confirm only after packing review.',
     summary: [
       { label: 'Mode', value: 'Create', detail: 'Start a new outbound shipment record.' },
       { label: 'Required now', value: '03', detail: 'Warehouse, destination, and one product line are enough to save a draft.' },
@@ -1434,8 +1420,8 @@ const operationalFormConfigs: OperationalFormConfig[] = [
     route: 'outbound-edit',
     moduleKey: 'outbound',
     mode: 'edit',
-    title: 'Edit Outbound',
-    description: 'Update the selected outbound order with linked destination context, line-item validation, and shipment confirmation controls.',
+    title: 'Edit Outbound Order',
+    description: 'Update the selected shipment and confirm it when dispatch review is complete.',
     summary: [
       { label: 'Mode', value: 'Edit', detail: 'Update the selected outbound shipment.' },
       { label: 'Structure', value: 'Header + Lines', detail: 'Shipment header details remain separate from product lines for fast review.' },

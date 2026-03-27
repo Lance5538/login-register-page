@@ -26,6 +26,28 @@ type OperationalModuleViewProps = {
 
 type ErrorMap = Record<string, string>;
 type TouchedMap = Record<string, boolean>;
+type MasterDataModule = Extract<OperationalModuleKey, 'product' | 'category'>;
+type WarehouseFlowModule = Extract<OperationalModuleKey, 'inbound' | 'outbound'>;
+type WarehouseFlowMetric = {
+  label: string;
+  value: string;
+};
+type WarehouseFlowFact = {
+  label: string;
+  value: string;
+};
+type WarehouseFlowSnapshot = {
+  title: string;
+  status: string;
+  detail: string;
+  metrics: WarehouseFlowMetric[];
+  facts: WarehouseFlowFact[];
+};
+type WarehouseFlowStep = {
+  label: string;
+  detail: string;
+  state: 'done' | 'active' | 'pending';
+};
 
 const detailRouteByModule: Record<OperationalModuleKey, WorkspaceRoute> = {
   product: 'product-detail',
@@ -179,6 +201,38 @@ function OperationalListPage({
   const options = ops.buildSelectionOptions(store, module);
   const currentSelection = options.find((option) => option.value === getSelectedRecordId(module, selections));
 
+  if (isWarehouseFlowModule(module)) {
+    return (
+      <WarehouseFlowListPage
+        module={module}
+        page={page}
+        store={store}
+        selections={selections}
+        setSelections={setSelections}
+        onNavigate={onNavigate}
+        recordIds={recordIds}
+        rows={rows}
+        options={options}
+      />
+    );
+  }
+
+  if (isMasterDataModule(module)) {
+    return (
+      <MasterDataListPage
+        module={module}
+        page={page}
+        store={store}
+        selections={selections}
+        setSelections={setSelections}
+        onNavigate={onNavigate}
+        recordIds={recordIds}
+        rows={rows}
+        options={options}
+      />
+    );
+  }
+
   return (
     <section className="workspace-layout">
       <section className="page-panel page-panel--main">
@@ -323,6 +377,36 @@ function OperationalDetailPage({
   const options = ops.buildSelectionOptions(store, module);
   const selectedOption = options.find((option) => option.value === getSelectedRecordId(module, selections));
 
+  if (isWarehouseFlowModule(module)) {
+    return (
+      <WarehouseFlowDetailPage
+        module={module}
+        page={page}
+        store={store}
+        selections={selections}
+        setSelections={setSelections}
+        onNavigate={onNavigate}
+        detailSection={detailSection}
+        options={options}
+      />
+    );
+  }
+
+  if (isMasterDataModule(module)) {
+    return (
+      <MasterDataDetailPage
+        module={module}
+        page={page}
+        store={store}
+        selections={selections}
+        setSelections={setSelections}
+        onNavigate={onNavigate}
+        detailSection={detailSection}
+        options={options}
+      />
+    );
+  }
+
   return (
     <section className="workspace-layout">
       <section className="page-panel page-panel--main">
@@ -444,6 +528,998 @@ function OperationalDetailPage({
   );
 }
 
+function isWarehouseFlowModule(module: OperationalModuleKey): module is WarehouseFlowModule {
+  return module === 'inbound' || module === 'outbound';
+}
+
+function getWarehouseFlowConfig(module: WarehouseFlowModule) {
+  if (module === 'inbound') {
+    return {
+      queueKicker: 'Receiving queue',
+      queueDescription: 'Start from the live receipt queue. Select one order to review, edit, or continue processing.',
+      detailKicker: 'Receipt workspace',
+      detailDescription: 'Review the selected receipt header, product lines, and confirmation state in one place.',
+      formKicker: 'Receipt setup',
+      formDescription: 'Complete the header first, then add product lines before final confirmation.',
+      primaryCreateLabel: 'New receipt',
+      reviewLabel: 'Review selected',
+      editLabel: 'Edit receipt',
+      backLabel: 'Back to queue',
+      selectedLabel: 'Selected receipt',
+      switchLabel: 'Receipt record',
+      partnerLabel: 'Supplier',
+      dateLabel: 'Planned date',
+      extraLabel: 'Reference no.',
+      emptyPartner: 'Pending supplier',
+      emptyWarehouse: 'Select warehouse',
+      formLead: 'Choose warehouse, supplier, and date before adding receipt lines.',
+      confirmLabel: 'Confirm Receipt',
+    };
+  }
+
+  return {
+    queueKicker: 'Dispatch queue',
+    queueDescription: 'Start from the live shipment queue. Select one order to review, edit, or continue processing.',
+    detailKicker: 'Shipment workspace',
+    detailDescription: 'Review the selected shipment header, product lines, and dispatch state in one place.',
+    formKicker: 'Shipment setup',
+    formDescription: 'Complete the header first, then add product lines before final confirmation.',
+    primaryCreateLabel: 'New shipment',
+    reviewLabel: 'Review selected',
+    editLabel: 'Edit shipment',
+    backLabel: 'Back to queue',
+    selectedLabel: 'Selected shipment',
+    switchLabel: 'Shipment record',
+    partnerLabel: 'Destination',
+    dateLabel: 'Ship date',
+    extraLabel: 'Carrier',
+    emptyPartner: 'Pending destination',
+    emptyWarehouse: 'Select warehouse',
+    formLead: 'Choose warehouse, destination, and ship date before adding shipment lines.',
+    confirmLabel: 'Confirm Shipment',
+  };
+}
+
+function getWarehouseFlowRecord(module: WarehouseFlowModule, store: WorkspaceStore, selections: OperationalSelections) {
+  return module === 'inbound' ? ops.getSelectedInbound(store, selections) : ops.getSelectedOutbound(store, selections);
+}
+
+function buildWarehouseFlowSnapshot(
+  module: WarehouseFlowModule,
+  store: WorkspaceStore,
+  record: WorkspaceStore['inboundOrders'][number] | WorkspaceStore['outboundOrders'][number],
+): WarehouseFlowSnapshot {
+  const config = getWarehouseFlowConfig(module);
+  const warehouse = ops.findWarehouse(store, record.warehouseId);
+  const warehouseCode = warehouse?.warehouseCode ?? record.warehouseId;
+  const warehouseName = warehouse?.warehouseName ?? record.warehouseId;
+
+  if (module === 'inbound') {
+    const inboundRecord = record as WorkspaceStore['inboundOrders'][number];
+
+    return {
+      title: inboundRecord.inboundNo,
+      status: inboundRecord.status,
+      detail: `${inboundRecord.supplierName || config.emptyPartner} · ${warehouseName}`,
+      metrics: [
+        { label: 'Warehouse', value: warehouseCode },
+        { label: config.partnerLabel, value: inboundRecord.supplierName || config.emptyPartner },
+        { label: 'Lines', value: String(ops.countLineItems(inboundRecord.lineItems)).padStart(2, '0') },
+        { label: 'Qty total', value: String(sumQuantities(inboundRecord.lineItems)) },
+      ],
+      facts: [
+        { label: config.dateLabel, value: inboundRecord.plannedDate || 'Pending' },
+        { label: config.extraLabel, value: inboundRecord.referenceNo || '--' },
+        { label: 'Created by', value: inboundRecord.createdBy },
+        { label: 'Confirmed', value: inboundRecord.confirmedAt ? ops.formatLongDate(inboundRecord.confirmedAt) : 'Pending' },
+      ],
+    };
+  }
+
+  const outboundRecord = record as WorkspaceStore['outboundOrders'][number];
+
+  return {
+    title: outboundRecord.outboundNo,
+    status: outboundRecord.status,
+    detail: `${outboundRecord.destination || config.emptyPartner} · ${warehouseName}`,
+    metrics: [
+      { label: 'Warehouse', value: warehouseCode },
+      { label: config.partnerLabel, value: outboundRecord.destination || config.emptyPartner },
+      { label: 'Lines', value: String(ops.countLineItems(outboundRecord.lineItems)).padStart(2, '0') },
+      { label: 'Qty total', value: String(sumQuantities(outboundRecord.lineItems)) },
+    ],
+    facts: [
+      { label: config.dateLabel, value: outboundRecord.shipmentDate || 'Pending' },
+      { label: config.extraLabel, value: outboundRecord.carrier || '--' },
+      { label: 'Created by', value: outboundRecord.createdBy },
+      { label: 'Confirmed', value: outboundRecord.confirmedAt ? ops.formatLongDate(outboundRecord.confirmedAt) : 'Pending' },
+    ],
+  };
+}
+
+function buildInboundFormSnapshot(formData: InboundFormData, store: WorkspaceStore): WarehouseFlowSnapshot {
+  const config = getWarehouseFlowConfig('inbound');
+  const warehouse = ops.findWarehouse(store, formData.warehouseId);
+
+  return {
+    title: formData.inboundNo || 'New receipt',
+    status: formData.status,
+    detail: `${formData.supplierName.trim() || config.emptyPartner} · ${warehouse?.warehouseName ?? config.emptyWarehouse}`,
+    metrics: [
+      { label: 'Warehouse', value: warehouse?.warehouseCode ?? '--' },
+      { label: config.partnerLabel, value: formData.supplierName.trim() || config.emptyPartner },
+      { label: 'Lines', value: String(ops.countLineItems(formData.lineItems)).padStart(2, '0') },
+      { label: 'Qty total', value: String(sumQuantities(formData.lineItems)) },
+    ],
+    facts: [
+      { label: config.dateLabel, value: formData.plannedDate || 'Pending' },
+      { label: config.extraLabel, value: formData.referenceNo.trim() || '--' },
+    ],
+  };
+}
+
+function buildOutboundFormSnapshot(formData: OutboundFormData, store: WorkspaceStore): WarehouseFlowSnapshot {
+  const config = getWarehouseFlowConfig('outbound');
+  const warehouse = ops.findWarehouse(store, formData.warehouseId);
+
+  return {
+    title: formData.outboundNo || 'New shipment',
+    status: formData.status,
+    detail: `${formData.destination.trim() || config.emptyPartner} · ${warehouse?.warehouseName ?? config.emptyWarehouse}`,
+    metrics: [
+      { label: 'Warehouse', value: warehouse?.warehouseCode ?? '--' },
+      { label: config.partnerLabel, value: formData.destination.trim() || config.emptyPartner },
+      { label: 'Lines', value: String(ops.countLineItems(formData.lineItems)).padStart(2, '0') },
+      { label: 'Qty total', value: String(sumQuantities(formData.lineItems)) },
+    ],
+    facts: [
+      { label: config.dateLabel, value: formData.shipmentDate || 'Pending' },
+      { label: config.extraLabel, value: formData.carrier.trim() || '--' },
+    ],
+  };
+}
+
+function hasReadyLineItem(lineItems: OrderLineItem[]) {
+  return lineItems.some((lineItem) => Boolean(lineItem.productId) && Number(lineItem.quantity) > 0);
+}
+
+function buildInboundFormSteps(formData: InboundFormData): WarehouseFlowStep[] {
+  const headerReady = Boolean(formData.warehouseId && formData.supplierName.trim() && formData.plannedDate.trim());
+  const linesReady = hasReadyLineItem(formData.lineItems);
+
+  return [
+    {
+      label: '1. Header',
+      detail: 'Warehouse, supplier, date',
+      state: headerReady ? 'done' : 'active',
+    },
+    {
+      label: '2. Lines',
+      detail: 'Add at least one receipt line',
+      state: headerReady ? (linesReady ? 'done' : 'active') : 'pending',
+    },
+    {
+      label: '3. Confirm',
+      detail: 'Finalize the receipt',
+      state: formData.status === 'Confirmed' ? 'done' : headerReady && linesReady ? 'active' : 'pending',
+    },
+  ];
+}
+
+function buildOutboundFormSteps(formData: OutboundFormData): WarehouseFlowStep[] {
+  const headerReady = Boolean(formData.warehouseId && formData.destination.trim() && formData.shipmentDate.trim());
+  const linesReady = hasReadyLineItem(formData.lineItems);
+
+  return [
+    {
+      label: '1. Header',
+      detail: 'Warehouse, destination, date',
+      state: headerReady ? 'done' : 'active',
+    },
+    {
+      label: '2. Lines',
+      detail: 'Add at least one shipment line',
+      state: headerReady ? (linesReady ? 'done' : 'active') : 'pending',
+    },
+    {
+      label: '3. Confirm',
+      detail: 'Release the shipment',
+      state: formData.status === 'Shipped' ? 'done' : headerReady && linesReady ? 'active' : 'pending',
+    },
+  ];
+}
+
+function WarehouseFlowHeader({
+  kicker,
+  title,
+  description,
+  actions,
+}: {
+  kicker: string;
+  title: string;
+  description: string;
+  actions?: ReactNode;
+}) {
+  return (
+    <section className="warehouse-flow-header">
+      <div className="warehouse-flow-header__copy">
+        <p className="section-kicker">{kicker}</p>
+        <h2>{title}</h2>
+        <p className="section-copy">{description}</p>
+      </div>
+
+      {actions ? <div className="warehouse-flow-header__actions">{actions}</div> : null}
+    </section>
+  );
+}
+
+function WarehouseFlowSpotlight({ kicker, snapshot }: { kicker: string; snapshot: WarehouseFlowSnapshot }) {
+  return (
+    <section className="warehouse-flow-spotlight">
+      <div className="warehouse-flow-spotlight__lead">
+        <div className="warehouse-flow-spotlight__eyebrow">
+          <p className="section-kicker">{kicker}</p>
+          <StatusPill value={snapshot.status} />
+        </div>
+        <h3>{snapshot.title}</h3>
+        <p className="section-copy">{snapshot.detail}</p>
+      </div>
+
+      <div className="warehouse-flow-metrics">
+        {snapshot.metrics.map((item) => (
+          <div className="warehouse-flow-metric" key={item.label}>
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function WarehouseFlowFacts({ facts }: { facts: WarehouseFlowFact[] }) {
+  return (
+    <div className="warehouse-flow-facts">
+      {facts.map((item) => (
+        <div className="warehouse-flow-fact" key={item.label}>
+          <span>{item.label}</span>
+          <strong>{item.value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function WarehouseFlowSteps({ items }: { items: WarehouseFlowStep[] }) {
+  return (
+    <section className="warehouse-flow-steps" aria-label="Workflow progress">
+      {items.map((item) => (
+        <div className={`warehouse-flow-step warehouse-flow-step--${item.state}`} key={item.label}>
+          <span>{item.label}</span>
+          <strong>{item.detail}</strong>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function WarehouseFlowListPage({
+  module,
+  page,
+  store,
+  selections,
+  setSelections,
+  onNavigate,
+  recordIds,
+  rows,
+  options,
+}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'selections' | 'setSelections' | 'onNavigate'> & {
+  module: WarehouseFlowModule;
+  recordIds: string[];
+  rows: Record<string, string>[];
+  options: SearchOption[];
+}) {
+  const config = getWarehouseFlowConfig(module);
+  const selectedRecordId = getSelectedRecordId(module, selections);
+  const selectedRecord = getWarehouseFlowRecord(module, store, selections);
+  const spotlight = buildWarehouseFlowSnapshot(module, store, selectedRecord);
+
+  return (
+    <section className="workspace-layout workspace-layout--warehouse-flow">
+      <section className="page-panel page-panel--main page-panel--warehouse-main">
+        <WarehouseFlowHeader
+          kicker={config.queueKicker}
+          title={page.title}
+          description={config.queueDescription}
+          actions={
+            <>
+              <button className="primary-button" type="button" onClick={() => onNavigate(module === 'inbound' ? 'inbound-create' : 'outbound-create')}>
+                {config.primaryCreateLabel}
+              </button>
+              <button className="secondary-button" type="button" onClick={() => onNavigate(detailRouteByModule[module])}>
+                {config.reviewLabel}
+              </button>
+              <button className="ghost-link" type="button" onClick={() => onNavigate(editRouteByModule[module])}>
+                {config.editLabel}
+              </button>
+            </>
+          }
+        />
+
+        <WarehouseFlowSpotlight kicker={config.selectedLabel} snapshot={spotlight} />
+
+        <div className="table-wrap table-wrap--warehouse">
+          <table className="orders-table orders-table--warehouse">
+            <thead>
+              <tr>
+                {page.columns?.map((column) => (
+                  <th key={column.key}>{column.label}</th>
+                ))}
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => {
+                const recordId = recordIds[index];
+                const isSelected = recordId === selectedRecordId;
+
+                return (
+                  <tr
+                    key={recordId}
+                    className={`orders-table__row ${isSelected ? 'is-selected' : ''}`}
+                    onClick={() => {
+                      setRecordSelection(module, recordId, setSelections);
+                    }}
+                  >
+                    {page.columns?.map((column) => (
+                      <td key={column.key}>{renderTableCell(column.key, row[column.key] ?? '--')}</td>
+                    ))}
+                    <td>
+                      <div className="table-actions">
+                        <button
+                          className="table-action-link table-action-link--accent"
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setRecordSelection(module, recordId, setSelections);
+                            onNavigate(detailRouteByModule[module]);
+                          }}
+                        >
+                          Review
+                        </button>
+                        <button
+                          className="table-action-link"
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setRecordSelection(module, recordId, setSelections);
+                            onNavigate(editRouteByModule[module]);
+                          }}
+                        >
+                          Continue
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
+        <section className="rail-block">
+          <div className="section-heading section-heading--stack">
+            <div>
+              <p className="section-kicker">{config.selectedLabel}</p>
+              <h2>Switch order</h2>
+            </div>
+          </div>
+
+          <SearchSelectField
+            label={config.switchLabel}
+            value={selectedRecordId}
+            options={options}
+            onChange={(value) => {
+              setRecordSelection(module, value, setSelections);
+            }}
+            placeholder={`Search ${config.switchLabel.toLowerCase()}`}
+          />
+        </section>
+
+        <section className="rail-block">
+          <div className="section-heading section-heading--stack">
+            <div>
+              <p className="section-kicker">Key facts</p>
+              <h2>{spotlight.title}</h2>
+            </div>
+            <p className="section-copy">Keep the active order in view while scanning the live queue.</p>
+          </div>
+
+          <WarehouseFlowFacts facts={spotlight.facts} />
+        </section>
+      </aside>
+    </section>
+  );
+}
+
+function WarehouseFlowDetailPage({
+  module,
+  page,
+  store,
+  selections,
+  setSelections,
+  onNavigate,
+  detailSection,
+  options,
+}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'selections' | 'setSelections' | 'onNavigate'> & {
+  module: WarehouseFlowModule;
+  detailSection: ReturnType<typeof buildDetailSection>;
+  options: SearchOption[];
+}) {
+  const config = getWarehouseFlowConfig(module);
+  const selectedRecordId = getSelectedRecordId(module, selections);
+  const selectedRecord = getWarehouseFlowRecord(module, store, selections);
+  const spotlight = buildWarehouseFlowSnapshot(module, store, selectedRecord);
+
+  return (
+    <section className="workspace-layout workspace-layout--warehouse-flow">
+      <section className="page-panel page-panel--main page-panel--warehouse-main">
+        <WarehouseFlowHeader
+          kicker={config.detailKicker}
+          title={page.title}
+          description={config.detailDescription}
+          actions={
+            <>
+              <button className="primary-button" type="button" onClick={() => onNavigate(editRouteByModule[module])}>
+                {config.editLabel}
+              </button>
+              <button className="secondary-button" type="button" onClick={() => onNavigate(module === 'inbound' ? 'inbound-list' : 'outbound-list')}>
+                {config.backLabel}
+              </button>
+            </>
+          }
+        />
+
+        <WarehouseFlowSpotlight kicker={config.selectedLabel} snapshot={spotlight} />
+
+        <div className="detail-groups detail-groups--warehouse">
+          {detailSection.groups.map((group) => (
+            <section className="detail-group" key={group.title}>
+              <div className="detail-group__header">
+                <p className="section-kicker">{group.title}</p>
+                <h3>{group.title}</h3>
+              </div>
+
+              <dl className="detail-list">
+                {group.fields.map((field) => (
+                  <div className="detail-list__row" key={field.label}>
+                    <dt>{field.label}</dt>
+                    <dd>{field.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ))}
+        </div>
+
+        {detailSection.lineItems?.length ? (
+          <section className="detail-slab">
+            <div className="section-heading">
+              <div>
+                <p className="section-kicker">Line review</p>
+                <h2>Product lines</h2>
+              </div>
+              <p className="section-copy">Keep header and line quantities aligned before final confirmation.</p>
+            </div>
+
+            <div className="table-wrap">
+              <table className="orders-table">
+                <thead>
+                  <tr>
+                    <th>Product</th>
+                    <th>Product Code</th>
+                    <th>Qty</th>
+                    <th>Unit</th>
+                    <th>Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detailSection.lineItems.map((lineItem) => (
+                    <tr key={lineItem.id}>
+                      <td>{lineItem.productName}</td>
+                      <td>{lineItem.productCode}</td>
+                      <td>{lineItem.quantity}</td>
+                      <td>{lineItem.unit}</td>
+                      <td>{lineItem.notes}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ) : null}
+
+        {detailSection.notes ? (
+          <section className="detail-slab detail-slab--notes">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">Notes</p>
+                <h2>{detailSection.notesLabel ?? 'Notes'}</h2>
+              </div>
+            </div>
+            <p className="section-copy">{detailSection.notes}</p>
+          </section>
+        ) : null}
+      </section>
+
+      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
+        <section className="rail-block">
+          <div className="section-heading section-heading--stack">
+            <div>
+              <p className="section-kicker">{config.selectedLabel}</p>
+              <h2>Switch order</h2>
+            </div>
+          </div>
+
+          <SearchSelectField
+            label={config.switchLabel}
+            value={selectedRecordId}
+            options={options}
+            onChange={(value) => {
+              setRecordSelection(module, value, setSelections);
+            }}
+            placeholder={`Search ${config.switchLabel.toLowerCase()}`}
+          />
+        </section>
+
+        <section className="rail-block">
+          <div className="section-heading section-heading--stack">
+            <div>
+              <p className="section-kicker">Key facts</p>
+              <h2>{spotlight.title}</h2>
+            </div>
+          </div>
+
+          <WarehouseFlowFacts facts={spotlight.facts} />
+        </section>
+      </aside>
+    </section>
+  );
+}
+
+function isMasterDataModule(module: OperationalModuleKey): module is MasterDataModule {
+  return module === 'product' || module === 'category';
+}
+
+function getMasterDataConfig(module: MasterDataModule) {
+  if (module === 'product') {
+    return {
+      queueKicker: 'Product master',
+      queueDescription: 'Manage SKU records with category and warehouse ownership visible from one workspace.',
+      detailKicker: 'Product workspace',
+      detailDescription: 'Review the selected SKU, linked category, warehouse assignment, and current master-data status.',
+      formKicker: 'Product setup',
+      formDescription: 'Capture product identity first, then confirm category, warehouse, code, and unit before saving.',
+      primaryCreateLabel: 'New product',
+      reviewLabel: 'Review selected',
+      editLabel: 'Edit product',
+      backLabel: 'Back to list',
+      selectedLabel: 'Selected product',
+      switchLabel: 'Product record',
+      emptyTitle: 'New product',
+      formLead: 'Start with product name and category, then confirm warehouse and unit.',
+      saveLabel: 'Save Product',
+      updateLabel: 'Update Product',
+    };
+  }
+
+  return {
+    queueKicker: 'Category structure',
+    queueDescription: 'Maintain category naming, status, and linked product coverage from one workspace.',
+    detailKicker: 'Category workspace',
+    detailDescription: 'Review the selected category, status, description, and linked product coverage.',
+    formKicker: 'Category setup',
+    formDescription: 'Set the category name first, then complete code, description, and status before saving.',
+    primaryCreateLabel: 'New category',
+    reviewLabel: 'Review selected',
+    editLabel: 'Edit category',
+    backLabel: 'Back to list',
+    selectedLabel: 'Selected category',
+    switchLabel: 'Category record',
+    emptyTitle: 'New category',
+    formLead: 'Start with the category name, then finalize code and status.',
+    saveLabel: 'Save Category',
+    updateLabel: 'Update Category',
+  };
+}
+
+function getMasterDataRecord(module: MasterDataModule, store: WorkspaceStore, selections: OperationalSelections) {
+  return module === 'product' ? ops.getSelectedProduct(store, selections) : ops.getSelectedCategory(store, selections);
+}
+
+function buildMasterDataSnapshot(
+  module: MasterDataModule,
+  store: WorkspaceStore,
+  record: WorkspaceStore['products'][number] | WorkspaceStore['categories'][number],
+): WarehouseFlowSnapshot {
+  if (module === 'product') {
+    const product = record as WorkspaceStore['products'][number];
+    const category = ops.findCategory(store, product.categoryId);
+    const warehouse = ops.findWarehouse(store, product.warehouseId);
+
+    return {
+      title: product.productName,
+      status: product.status,
+      detail: `${product.productCode} · ${category?.categoryName ?? 'Unassigned'} · ${warehouse?.warehouseName ?? 'Unassigned'}`,
+      metrics: [
+        { label: 'Code', value: product.productCode },
+        { label: 'Category', value: category?.categoryName ?? 'Unassigned' },
+        { label: 'Warehouse', value: warehouse?.warehouseCode ?? 'Unassigned' },
+        { label: 'Unit', value: product.unit },
+      ],
+      facts: [
+        { label: 'Created', value: ops.formatLongDate(product.createdAt) },
+        { label: 'Updated', value: ops.formatLongDate(product.updatedAt) },
+      ],
+    };
+  }
+
+  const category = record as WorkspaceStore['categories'][number];
+  const linkedProducts = store.products.filter((product) => product.categoryId === category.id).length;
+
+  return {
+    title: category.categoryName,
+    status: category.status,
+    detail: `${category.categoryCode} · ${linkedProducts} linked products`,
+    metrics: [
+      { label: 'Code', value: category.categoryCode },
+      { label: 'Linked', value: String(linkedProducts) },
+      { label: 'Updated by', value: category.updatedBy },
+      { label: 'Status', value: category.status },
+    ],
+    facts: [
+      { label: 'Updated', value: ops.formatLongDate(category.updatedAt) },
+      { label: 'Description', value: category.description || '--' },
+    ],
+  };
+}
+
+function buildProductFormSnapshot(formData: ProductFormData, store: WorkspaceStore): WarehouseFlowSnapshot {
+  const config = getMasterDataConfig('product');
+  const category = ops.findCategory(store, formData.categoryId);
+  const warehouse = ops.findWarehouse(store, formData.warehouseId);
+
+  return {
+    title: formData.productName.trim() || config.emptyTitle,
+    status: formData.status,
+    detail: `${formData.productCode || 'Auto code'} · ${category?.categoryName ?? 'Select category'} · ${warehouse?.warehouseName ?? 'Select warehouse'}`,
+    metrics: [
+      { label: 'Code', value: formData.productCode || 'Auto' },
+      { label: 'Category', value: category?.categoryName ?? 'Pending' },
+      { label: 'Warehouse', value: warehouse?.warehouseCode ?? 'Pending' },
+      { label: 'Unit', value: formData.unit || 'Auto' },
+    ],
+    facts: [],
+  };
+}
+
+function buildCategoryFormSnapshot(
+  formData: CategoryFormData,
+  linkedProductCount: number,
+): WarehouseFlowSnapshot {
+  const config = getMasterDataConfig('category');
+
+  return {
+    title: formData.categoryName.trim() || config.emptyTitle,
+    status: formData.status,
+    detail: `${formData.categoryCode || 'Auto code'} · ${linkedProductCount} linked products`,
+    metrics: [
+      { label: 'Code', value: formData.categoryCode || 'Auto' },
+      { label: 'Linked', value: String(linkedProductCount) },
+      { label: 'Description', value: formData.description.trim() ? 'Ready' : 'Optional' },
+      { label: 'Notes', value: formData.notes.trim() ? 'Ready' : 'Optional' },
+    ],
+    facts: formData.description.trim() ? [{ label: 'Description', value: formData.description.trim() }] : [],
+  };
+}
+
+function buildProductFormSteps(formData: ProductFormData): WarehouseFlowStep[] {
+  const basicsReady = Boolean(formData.productName.trim() && formData.categoryId);
+  const contextReady = Boolean(formData.warehouseId && formData.productCode.trim() && formData.unit.trim());
+
+  return [
+    {
+      label: '1. Basics',
+      detail: 'Name and category',
+      state: basicsReady ? 'done' : 'active',
+    },
+    {
+      label: '2. Context',
+      detail: 'Warehouse, code, unit',
+      state: basicsReady ? (contextReady ? 'done' : 'active') : 'pending',
+    },
+    {
+      label: '3. Save',
+      detail: 'Publish or keep draft',
+      state: formData.status === 'Active' ? 'done' : basicsReady && contextReady ? 'active' : 'pending',
+    },
+  ];
+}
+
+function buildCategoryFormSteps(formData: CategoryFormData): WarehouseFlowStep[] {
+  const basicsReady = Boolean(formData.categoryName.trim());
+  const contextReady = Boolean(formData.categoryCode.trim());
+
+  return [
+    {
+      label: '1. Basics',
+      detail: 'Name first',
+      state: basicsReady ? 'done' : 'active',
+    },
+    {
+      label: '2. Context',
+      detail: 'Code and status',
+      state: basicsReady ? (contextReady ? 'done' : 'active') : 'pending',
+    },
+    {
+      label: '3. Save',
+      detail: 'Publish or keep draft',
+      state: formData.status === 'Active' ? 'done' : basicsReady && contextReady ? 'active' : 'pending',
+    },
+  ];
+}
+
+function MasterDataListPage({
+  module,
+  page,
+  store,
+  selections,
+  setSelections,
+  onNavigate,
+  recordIds,
+  rows,
+  options,
+}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'selections' | 'setSelections' | 'onNavigate'> & {
+  module: MasterDataModule;
+  recordIds: string[];
+  rows: Record<string, string>[];
+  options: SearchOption[];
+}) {
+  const config = getMasterDataConfig(module);
+  const selectedRecordId = getSelectedRecordId(module, selections);
+  const selectedRecord = getMasterDataRecord(module, store, selections);
+  const spotlight = buildMasterDataSnapshot(module, store, selectedRecord);
+
+  return (
+    <section className="workspace-layout workspace-layout--warehouse-flow">
+      <section className="page-panel page-panel--main page-panel--warehouse-main">
+        <WarehouseFlowHeader
+          kicker={config.queueKicker}
+          title={page.title}
+          description={config.queueDescription}
+          actions={
+            <>
+              <button className="primary-button" type="button" onClick={() => onNavigate(module === 'product' ? 'product-create' : 'category-create')}>
+                {config.primaryCreateLabel}
+              </button>
+              <button className="secondary-button" type="button" onClick={() => onNavigate(detailRouteByModule[module])}>
+                {config.reviewLabel}
+              </button>
+              <button className="ghost-link" type="button" onClick={() => onNavigate(editRouteByModule[module])}>
+                {config.editLabel}
+              </button>
+            </>
+          }
+        />
+
+        <WarehouseFlowSpotlight kicker={config.selectedLabel} snapshot={spotlight} />
+
+        <div className="table-wrap table-wrap--warehouse">
+          <table className="orders-table">
+            <thead>
+              <tr>
+                {page.columns?.map((column) => (
+                  <th key={column.key}>{column.label}</th>
+                ))}
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => {
+                const recordId = recordIds[index];
+                const isSelected = recordId === selectedRecordId;
+
+                return (
+                  <tr
+                    key={recordId}
+                    className={`orders-table__row ${isSelected ? 'is-selected' : ''}`}
+                    onClick={() => {
+                      setRecordSelection(module, recordId, setSelections);
+                    }}
+                  >
+                    {page.columns?.map((column) => (
+                      <td key={column.key}>{renderTableCell(column.key, row[column.key] ?? '--')}</td>
+                    ))}
+                    <td>
+                      <div className="table-actions">
+                        <button
+                          className="table-action-link table-action-link--accent"
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setRecordSelection(module, recordId, setSelections);
+                            onNavigate(detailRouteByModule[module]);
+                          }}
+                        >
+                          Review
+                        </button>
+                        <button
+                          className="table-action-link"
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setRecordSelection(module, recordId, setSelections);
+                            onNavigate(editRouteByModule[module]);
+                          }}
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
+        <section className="rail-block">
+          <div className="section-heading section-heading--stack">
+            <div>
+              <p className="section-kicker">{config.selectedLabel}</p>
+              <h2>Switch record</h2>
+            </div>
+          </div>
+
+          <SearchSelectField
+            label={config.switchLabel}
+            value={selectedRecordId}
+            options={options}
+            onChange={(value) => {
+              setRecordSelection(module, value, setSelections);
+            }}
+            placeholder={`Search ${config.switchLabel.toLowerCase()}`}
+          />
+        </section>
+
+        <section className="rail-block">
+          <div className="section-heading section-heading--stack">
+            <div>
+              <p className="section-kicker">Key facts</p>
+              <h2>{spotlight.title}</h2>
+            </div>
+            <p className="section-copy">Keep the active master record in view while scanning the list.</p>
+          </div>
+
+          <WarehouseFlowFacts facts={spotlight.facts} />
+        </section>
+      </aside>
+    </section>
+  );
+}
+
+function MasterDataDetailPage({
+  module,
+  page,
+  store,
+  selections,
+  setSelections,
+  onNavigate,
+  detailSection,
+  options,
+}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'selections' | 'setSelections' | 'onNavigate'> & {
+  module: MasterDataModule;
+  detailSection: ReturnType<typeof buildDetailSection>;
+  options: SearchOption[];
+}) {
+  const config = getMasterDataConfig(module);
+  const selectedRecordId = getSelectedRecordId(module, selections);
+  const selectedRecord = getMasterDataRecord(module, store, selections);
+  const spotlight = buildMasterDataSnapshot(module, store, selectedRecord);
+
+  return (
+    <section className="workspace-layout workspace-layout--warehouse-flow">
+      <section className="page-panel page-panel--main page-panel--warehouse-main">
+        <WarehouseFlowHeader
+          kicker={config.detailKicker}
+          title={page.title}
+          description={config.detailDescription}
+          actions={
+            <>
+              <button className="primary-button" type="button" onClick={() => onNavigate(editRouteByModule[module])}>
+                {config.editLabel}
+              </button>
+              <button className="secondary-button" type="button" onClick={() => onNavigate(module === 'product' ? 'product-list' : 'category-list')}>
+                {config.backLabel}
+              </button>
+            </>
+          }
+        />
+
+        <WarehouseFlowSpotlight kicker={config.selectedLabel} snapshot={spotlight} />
+
+        <div className="detail-groups">
+          {detailSection.groups.map((group) => (
+            <section className="detail-group" key={group.title}>
+              <div className="detail-group__header">
+                <p className="section-kicker">{group.title}</p>
+                <h3>{group.title}</h3>
+              </div>
+
+              <dl className="detail-list">
+                {group.fields.map((field) => (
+                  <div className="detail-list__row" key={field.label}>
+                    <dt>{field.label}</dt>
+                    <dd>{field.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ))}
+        </div>
+
+        {detailSection.notes ? (
+          <section className="detail-slab detail-slab--notes">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">Notes</p>
+                <h2>{detailSection.notesLabel ?? 'Notes'}</h2>
+              </div>
+            </div>
+            <p className="section-copy">{detailSection.notes}</p>
+          </section>
+        ) : null}
+      </section>
+
+      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
+        <section className="rail-block">
+          <div className="section-heading section-heading--stack">
+            <div>
+              <p className="section-kicker">{config.selectedLabel}</p>
+              <h2>Switch record</h2>
+            </div>
+          </div>
+
+          <SearchSelectField
+            label={config.switchLabel}
+            value={selectedRecordId}
+            options={options}
+            onChange={(value) => {
+              setRecordSelection(module, value, setSelections);
+            }}
+            placeholder={`Search ${config.switchLabel.toLowerCase()}`}
+          />
+        </section>
+
+        <section className="rail-block">
+          <div className="section-heading section-heading--stack">
+            <div>
+              <p className="section-kicker">Key facts</p>
+              <h2>{spotlight.title}</h2>
+            </div>
+          </div>
+
+          <WarehouseFlowFacts facts={spotlight.facts} />
+        </section>
+      </aside>
+    </section>
+  );
+}
+
 function ProductFormPage({
   mode,
   page,
@@ -558,21 +1634,33 @@ function ProductFormEditor({
     }
   }
 
-  return (
-    <section className="workspace-layout">
-      <section className="page-panel page-panel--main">
-        <div className="section-heading">
-          <div>
-            <p className="section-kicker">Operational form</p>
-            <h2>{page.title}</h2>
-          </div>
-          <p className="section-copy">Category and warehouse use linked selectors, while product code and unit can fill automatically as the master data takes shape.</p>
-        </div>
+  const flowConfig = getMasterDataConfig('product');
+  const flowSteps = buildProductFormSteps(formData);
+  const previewSnapshot = buildProductFormSnapshot(formData, store);
+  const readyToSave = flowSteps[0].state === 'done' && flowSteps[1].state === 'done';
 
-        <div className="form-banner">
-          <p className="section-kicker">Northline pattern</p>
-          <p className="section-copy">Required now: product name, category, warehouse. Save the rest only when it improves the operator handoff.</p>
-        </div>
+  return (
+    <section className="workspace-layout workspace-layout--warehouse-flow">
+      <section className="page-panel page-panel--main page-panel--warehouse-main">
+        <WarehouseFlowHeader
+          kicker={flowConfig.formKicker}
+          title={page.title}
+          description={flowConfig.formDescription}
+          actions={
+            <>
+              <button className="secondary-button" type="button" onClick={() => onNavigate('product-list')}>
+                {flowConfig.backLabel}
+              </button>
+              {mode === 'edit' ? (
+                <button className="ghost-link" type="button" onClick={() => onNavigate(detailRouteByModule.product)}>
+                  Review product
+                </button>
+              ) : null}
+            </>
+          }
+        />
+
+        <WarehouseFlowSteps items={flowSteps} />
 
         <form
           className="workflow-form"
@@ -580,10 +1668,7 @@ function ProductFormEditor({
             event.preventDefault();
           }}
         >
-          <FormSection
-            title="Basic Information"
-            description="Capture the product identity first so linked fields can auto-complete downstream details."
-          >
+          <FormSection title="Identity" description="Start with product name and category.">
             <div className="form-section__grid form-section__grid--two">
               <TextField
                 label="Product name"
@@ -607,7 +1692,9 @@ function ProductFormEditor({
                 error={getVisibleError('categoryId', errors, touched, submitCount)}
               />
             </div>
+          </FormSection>
 
+          <FormSection title="Operational Context" description="Confirm warehouse, code, unit, and status before saving.">
             <div className="form-section__grid form-section__grid--two">
               <SearchSelectField
                 label="Warehouse"
@@ -628,12 +1715,7 @@ function ProductFormEditor({
                 onChange={(value) => updateField('status', value as ProductFormData['status'])}
               />
             </div>
-          </FormSection>
 
-          <FormSection
-            title="Item Details"
-            description="Keep code and unit close to the linked master-data fields so operators can verify the record at a glance."
-          >
             <div className="form-section__grid form-section__grid--two">
               <TextField
                 label="Product code"
@@ -662,7 +1744,7 @@ function ProductFormEditor({
             </div>
           </FormSection>
 
-          <FormSection title="Notes" description="Keep only the handling context that should remain visible when the record is edited later.">
+          <FormSection title="Notes">
             <TextAreaField
               label="Product notes"
               value={formData.notes}
@@ -671,55 +1753,82 @@ function ProductFormEditor({
             />
           </FormSection>
 
-          <FormActionBar
-            title="Actions"
-            description="Save a draft while the product is still taking shape, or save the product into the local operational set."
-            secondaryActionLabel="Save Draft"
-            primaryActionLabel={mode === 'create' ? 'Save Product' : 'Update Product'}
-            onSecondaryAction={() => saveProduct(true)}
-            onPrimaryAction={() => saveProduct(false)}
-          />
+          <section className="form-section form-section--actions">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">Finish</p>
+                <h2>Save the record</h2>
+              </div>
+              <p className="section-copy">
+                {readyToSave
+                  ? 'Save as draft while the master data is still forming, or publish the current product record.'
+                  : flowConfig.formLead}
+              </p>
+            </div>
+
+            <div className="button-row">
+              <button className="secondary-button" type="button" onClick={() => saveProduct(true)}>
+                Save Draft
+              </button>
+              <button className="primary-button" type="button" onClick={() => saveProduct(false)}>
+                {mode === 'create' ? flowConfig.saveLabel : flowConfig.updateLabel}
+              </button>
+              <button className="ghost-link" type="button" onClick={() => onNavigate('product-list')}>
+                {flowConfig.backLabel}
+              </button>
+            </div>
+          </section>
         </form>
       </section>
 
-      <RailFrame page={page} onNavigate={onNavigate}>
+      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
         {mode === 'edit' ? (
-          <SelectionRailBlock
-            title="Selected product"
-            description="Switch the current product without leaving the form."
-            label="Product record"
-            value={selections.productId}
-            options={ops.buildSelectionOptions(store, 'product')}
-            onChange={(value) => setSelections((current) => ({ ...current, productId: value }))}
-          />
+          <section className="rail-block">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">{flowConfig.selectedLabel}</p>
+                <h2>Switch record</h2>
+              </div>
+            </div>
+
+            <SearchSelectField
+              label={flowConfig.switchLabel}
+              value={selections.productId}
+              options={ops.buildSelectionOptions(store, 'product')}
+              onChange={(value) => setSelections((current) => ({ ...current, productId: value }))}
+              placeholder="Search product record"
+            />
+          </section>
         ) : (
-          <GuidanceRailBlock
-            title="Create flow"
-            description={ops.buildFormSummaryDetail(store, 'product')}
-            items={[
-              'Category drives the code suggestion.',
-              'Warehouse stays required to prevent unassigned products.',
-              'Unit can start with the category recommendation and be refined only when needed.',
-            ]}
-          />
+          <section className="rail-block">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">Start here</p>
+                <h2>{flowConfig.primaryCreateLabel}</h2>
+              </div>
+              <p className="section-copy">{flowConfig.formLead}</p>
+            </div>
+          </section>
         )}
 
         <section className="rail-block">
           <div className="section-heading section-heading--stack">
             <div>
               <p className="section-kicker">Preview</p>
-              <h2>{formData.productName || 'New product'}</h2>
+              <h2>{previewSnapshot.title}</h2>
             </div>
           </div>
 
           <div className="preview-grid">
-            <PreviewStat label="Code" value={formData.productCode || 'Auto'} />
-            <PreviewStat label="Unit" value={formData.unit || 'Auto'} />
             <PreviewStat label="Status" value={formData.status} tone={ops.getStatusTone(formData.status)} />
-            <PreviewStat label="Warehouse" value={findOptionLabel(warehouseOptions, formData.warehouseId) || 'Pending'} />
+            {previewSnapshot.metrics.map((metric) => (
+              <PreviewStat key={metric.label} label={metric.label} value={metric.value} />
+            ))}
           </div>
+
+          {previewSnapshot.facts.length ? <WarehouseFlowFacts facts={previewSnapshot.facts} /> : null}
         </section>
-      </RailFrame>
+      </aside>
     </section>
   );
 }
@@ -829,21 +1938,33 @@ function CategoryFormEditor({
     }
   }
 
-  return (
-    <section className="workspace-layout">
-      <section className="page-panel page-panel--main">
-        <div className="section-heading">
-          <div>
-            <p className="section-kicker">Operational form</p>
-            <h2>{page.title}</h2>
-          </div>
-          <p className="section-copy">The category form stays short on purpose: operators can create structure quickly, then enrich it only when product mapping needs more context.</p>
-        </div>
+  const flowConfig = getMasterDataConfig('category');
+  const flowSteps = buildCategoryFormSteps(formData);
+  const previewSnapshot = buildCategoryFormSnapshot(formData, linkedProductCount);
+  const readyToSave = flowSteps[0].state === 'done' && flowSteps[1].state === 'done';
 
-        <div className="form-banner">
-          <p className="section-kicker">Northline pattern</p>
-          <p className="section-copy">Required now: category name. The code can be generated and refined before the category becomes active.</p>
-        </div>
+  return (
+    <section className="workspace-layout workspace-layout--warehouse-flow">
+      <section className="page-panel page-panel--main page-panel--warehouse-main">
+        <WarehouseFlowHeader
+          kicker={flowConfig.formKicker}
+          title={page.title}
+          description={flowConfig.formDescription}
+          actions={
+            <>
+              <button className="secondary-button" type="button" onClick={() => onNavigate('category-list')}>
+                {flowConfig.backLabel}
+              </button>
+              {mode === 'edit' ? (
+                <button className="ghost-link" type="button" onClick={() => onNavigate(detailRouteByModule.category)}>
+                  Review category
+                </button>
+              ) : null}
+            </>
+          }
+        />
+
+        <WarehouseFlowSteps items={flowSteps} />
 
         <form
           className="workflow-form"
@@ -851,7 +1972,7 @@ function CategoryFormEditor({
             event.preventDefault();
           }}
         >
-          <FormSection title="Basic Information" description="Create the category label first so products can start linking to it immediately.">
+          <FormSection title="Identity" description="Start with the category name.">
             <div className="form-section__grid form-section__grid--two">
               <TextField
                 label="Category name"
@@ -877,7 +1998,7 @@ function CategoryFormEditor({
             </div>
           </FormSection>
 
-          <FormSection title="Item Details" description="Keep the live category description and status visible to reduce misclassification downstream.">
+          <FormSection title="Operational Context" description="Confirm description and status before saving.">
             <div className="form-section__grid form-section__grid--two">
               <TextAreaField
                 label="Description"
@@ -894,7 +2015,7 @@ function CategoryFormEditor({
             </div>
           </FormSection>
 
-          <FormSection title="Notes" description="Use notes for category guidance that should remain visible when products are assigned later.">
+          <FormSection title="Notes">
             <TextAreaField
               label="Category notes"
               value={formData.notes}
@@ -903,54 +2024,82 @@ function CategoryFormEditor({
             />
           </FormSection>
 
-          <FormActionBar
-            title="Actions"
-            description="Save the category in draft while the naming is still being aligned, or save it into the active local product structure."
-            secondaryActionLabel="Save Draft"
-            primaryActionLabel={mode === 'create' ? 'Save Category' : 'Update Category'}
-            onSecondaryAction={() => saveCategory(true)}
-            onPrimaryAction={() => saveCategory(false)}
-          />
+          <section className="form-section form-section--actions">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">Finish</p>
+                <h2>Save the record</h2>
+              </div>
+              <p className="section-copy">
+                {readyToSave
+                  ? 'Save as draft while the structure is still under review, or publish the current category record.'
+                  : flowConfig.formLead}
+              </p>
+            </div>
+
+            <div className="button-row">
+              <button className="secondary-button" type="button" onClick={() => saveCategory(true)}>
+                Save Draft
+              </button>
+              <button className="primary-button" type="button" onClick={() => saveCategory(false)}>
+                {mode === 'create' ? flowConfig.saveLabel : flowConfig.updateLabel}
+              </button>
+              <button className="ghost-link" type="button" onClick={() => onNavigate('category-list')}>
+                {flowConfig.backLabel}
+              </button>
+            </div>
+          </section>
         </form>
       </section>
 
-      <RailFrame page={page} onNavigate={onNavigate}>
+      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
         {mode === 'edit' ? (
-          <SelectionRailBlock
-            title="Selected category"
-            description="Switch the current category without leaving the form."
-            label="Category record"
-            value={selections.categoryId}
-            options={ops.buildSelectionOptions(store, 'category')}
-            onChange={(value) => setSelections((current) => ({ ...current, categoryId: value }))}
-          />
+          <section className="rail-block">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">{flowConfig.selectedLabel}</p>
+                <h2>Switch record</h2>
+              </div>
+            </div>
+
+            <SearchSelectField
+              label={flowConfig.switchLabel}
+              value={selections.categoryId}
+              options={ops.buildSelectionOptions(store, 'category')}
+              onChange={(value) => setSelections((current) => ({ ...current, categoryId: value }))}
+              placeholder="Search category record"
+            />
+          </section>
         ) : (
-          <GuidanceRailBlock
-            title="Create flow"
-            description={ops.buildFormSummaryDetail(store, 'category')}
-            items={[
-              'Keep the name clear enough for product assignment.',
-              'Use Draft while the category structure is still being reviewed.',
-              'Description should help operations, not restate the name.',
-            ]}
-          />
+          <section className="rail-block">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">Start here</p>
+                <h2>{flowConfig.primaryCreateLabel}</h2>
+              </div>
+              <p className="section-copy">{flowConfig.formLead}</p>
+            </div>
+          </section>
         )}
 
         <section className="rail-block">
           <div className="section-heading section-heading--stack">
             <div>
               <p className="section-kicker">Preview</p>
-              <h2>{formData.categoryName || 'New category'}</h2>
+              <h2>{previewSnapshot.title}</h2>
             </div>
           </div>
 
           <div className="preview-grid">
-            <PreviewStat label="Code" value={formData.categoryCode || 'Auto'} />
             <PreviewStat label="Status" value={formData.status} tone={ops.getStatusTone(formData.status)} />
-            <PreviewStat label="Linked products" value={String(linkedProductCount)} />
+            {previewSnapshot.metrics.map((metric) => (
+              <PreviewStat key={metric.label} label={metric.label} value={metric.value} />
+            ))}
           </div>
+
+          {previewSnapshot.facts.length ? <WarehouseFlowFacts facts={previewSnapshot.facts} /> : null}
         </section>
-      </RailFrame>
+      </aside>
     </section>
   );
 }
@@ -1080,23 +2229,33 @@ function InboundFormEditor({
     }
   }
 
-  const totalUnits = sumQuantities(formData.lineItems);
+  const flowConfig = getWarehouseFlowConfig('inbound');
+  const flowSteps = buildInboundFormSteps(formData);
+  const previewSnapshot = buildInboundFormSnapshot(formData, store);
+  const readyToConfirm = flowSteps[0].state === 'done' && flowSteps[1].state === 'done';
 
   return (
-    <section className="workspace-layout">
-      <section className="page-panel page-panel--main">
-        <div className="section-heading">
-          <div>
-            <p className="section-kicker">Operational form</p>
-            <h2>{page.title}</h2>
-          </div>
-          <p className="section-copy">The inbound flow keeps header fields, line items, and notes separate so receiving teams can move quickly without missing warehouse context.</p>
-        </div>
+    <section className="workspace-layout workspace-layout--warehouse-flow">
+      <section className="page-panel page-panel--main page-panel--warehouse-main">
+        <WarehouseFlowHeader
+          kicker={flowConfig.formKicker}
+          title={page.title}
+          description={flowConfig.formDescription}
+          actions={
+            <>
+              <button className="secondary-button" type="button" onClick={() => onNavigate('inbound-list')}>
+                {flowConfig.backLabel}
+              </button>
+              {mode === 'edit' ? (
+                <button className="ghost-link" type="button" onClick={() => onNavigate(detailRouteByModule.inbound)}>
+                  Review receipt
+                </button>
+              ) : null}
+            </>
+          }
+        />
 
-        <div className="form-banner">
-          <p className="section-kicker">Northline pattern</p>
-          <p className="section-copy">Required now: warehouse, supplier, and one product line. Product code and unit are pulled from the selected product automatically.</p>
-        </div>
+        <WarehouseFlowSteps items={flowSteps} />
 
         <form
           className="workflow-form"
@@ -1104,7 +2263,7 @@ function InboundFormEditor({
             event.preventDefault();
           }}
         >
-          <FormSection title="Basic Information" description="Capture the inbound header first so the receiving queue has warehouse ownership and supplier context immediately.">
+          <FormSection title="Order Header" description="Start with warehouse, supplier, and planned date.">
             <div className="form-section__grid form-section__grid--two">
               <ReadonlyField label="Inbound number" value={formData.inboundNo || 'Generated on save'} />
               <SearchSelectField
@@ -1157,7 +2316,7 @@ function InboundFormEditor({
             </div>
           </FormSection>
 
-          <FormSection title="Item Details" description="Each line keeps the linked product searchable while code and unit fill in automatically to reduce receiving errors.">
+          <FormSection title="Product Lines" description="Add at least one product line with quantity before confirmation.">
             <LineItemsEditor
               lineItems={formData.lineItems}
               productOptions={productOptions}
@@ -1172,64 +2331,91 @@ function InboundFormEditor({
             />
           </FormSection>
 
-          <FormSection title="Notes" description="Use notes for dock instructions, QC handoff, or supplier-specific exceptions that should travel with the receipt.">
+          <FormSection title="Notes">
             <TextAreaField
               label="Inbound notes"
               value={formData.notes}
               onChange={(value) => updateField('notes', value)}
-              placeholder="Add receipt instructions or follow-up context"
+              placeholder="Add dock instructions or receipt exceptions"
             />
           </FormSection>
 
-          <FormActionBar
-            title="Actions"
-            description="Save the inbound header and lines without final confirmation, or confirm the receipt once quantities are ready."
-            secondaryActionLabel="Save Draft"
-            primaryActionLabel="Confirm Receipt"
-            onSecondaryAction={() => saveInbound(false)}
-            onPrimaryAction={() => saveInbound(true)}
-          />
+          <section className="form-section form-section--actions">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">Finish</p>
+                <h2>Save or confirm</h2>
+              </div>
+              <p className="section-copy">
+                {readyToConfirm
+                  ? 'Save the receipt as work in progress or confirm it when warehouse review is complete.'
+                  : flowConfig.formLead}
+              </p>
+            </div>
+
+            <div className="button-row">
+              <button className="secondary-button" type="button" onClick={() => saveInbound(false)}>
+                Save Draft
+              </button>
+              <button className="primary-button" type="button" onClick={() => saveInbound(true)}>
+                {flowConfig.confirmLabel}
+              </button>
+              <button className="ghost-link" type="button" onClick={() => onNavigate('inbound-list')}>
+                {flowConfig.backLabel}
+              </button>
+            </div>
+          </section>
         </form>
       </section>
 
-      <RailFrame page={page} onNavigate={onNavigate}>
+      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
         {mode === 'edit' ? (
-          <SelectionRailBlock
-            title="Selected inbound"
-            description="Switch the current receipt without leaving the form."
-            label="Inbound order"
-            value={selections.inboundId}
-            options={ops.buildSelectionOptions(store, 'inbound')}
-            onChange={(value) => setSelections((current) => ({ ...current, inboundId: value }))}
-          />
+          <section className="rail-block">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">{flowConfig.selectedLabel}</p>
+                <h2>Switch order</h2>
+              </div>
+            </div>
+
+            <SearchSelectField
+              label={flowConfig.switchLabel}
+              value={selections.inboundId}
+              options={ops.buildSelectionOptions(store, 'inbound')}
+              onChange={(value) => setSelections((current) => ({ ...current, inboundId: value }))}
+              placeholder="Search receipt record"
+            />
+          </section>
         ) : (
-          <GuidanceRailBlock
-            title="Receipt flow"
-            description={ops.buildFormSummaryDetail(store, 'inbound')}
-            items={[
-              'Header fields establish warehouse ownership before item entry.',
-              'Line items should always be product-led, not free text.',
-              'Confirm Receipt should be the last action after quantity review.',
-            ]}
-          />
+          <section className="rail-block">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">Start here</p>
+                <h2>{flowConfig.primaryCreateLabel}</h2>
+              </div>
+              <p className="section-copy">{flowConfig.formLead}</p>
+            </div>
+          </section>
         )}
 
         <section className="rail-block">
           <div className="section-heading section-heading--stack">
             <div>
               <p className="section-kicker">Preview</p>
-              <h2>{formData.inboundNo || 'New inbound'}</h2>
+              <h2>{previewSnapshot.title}</h2>
             </div>
           </div>
 
           <div className="preview-grid">
             <PreviewStat label="Status" value={formData.status} tone={ops.getStatusTone(formData.status)} />
-            <PreviewStat label="Supplier" value={formData.supplierName || 'Pending'} />
-            <PreviewStat label="Lines" value={String(ops.countLineItems(formData.lineItems))} />
-            <PreviewStat label="Qty total" value={String(totalUnits)} />
+            {previewSnapshot.metrics.map((metric) => (
+              <PreviewStat key={metric.label} label={metric.label} value={metric.value} />
+            ))}
           </div>
+
+          <WarehouseFlowFacts facts={previewSnapshot.facts} />
         </section>
-      </RailFrame>
+      </aside>
     </section>
   );
 }
@@ -1359,23 +2545,33 @@ function OutboundFormEditor({
     }
   }
 
-  const totalUnits = sumQuantities(formData.lineItems);
+  const flowConfig = getWarehouseFlowConfig('outbound');
+  const flowSteps = buildOutboundFormSteps(formData);
+  const previewSnapshot = buildOutboundFormSnapshot(formData, store);
+  const readyToConfirm = flowSteps[0].state === 'done' && flowSteps[1].state === 'done';
 
   return (
-    <section className="workspace-layout">
-      <section className="page-panel page-panel--main">
-        <div className="section-heading">
-          <div>
-            <p className="section-kicker">Operational form</p>
-            <h2>{page.title}</h2>
-          </div>
-          <p className="section-copy">The outbound flow keeps shipment planning, line items, and dispatch notes separate so teams can move from picking to confirmation without losing context.</p>
-        </div>
+    <section className="workspace-layout workspace-layout--warehouse-flow">
+      <section className="page-panel page-panel--main page-panel--warehouse-main">
+        <WarehouseFlowHeader
+          kicker={flowConfig.formKicker}
+          title={page.title}
+          description={flowConfig.formDescription}
+          actions={
+            <>
+              <button className="secondary-button" type="button" onClick={() => onNavigate('outbound-list')}>
+                {flowConfig.backLabel}
+              </button>
+              {mode === 'edit' ? (
+                <button className="ghost-link" type="button" onClick={() => onNavigate(detailRouteByModule.outbound)}>
+                  Review shipment
+                </button>
+              ) : null}
+            </>
+          }
+        />
 
-        <div className="form-banner">
-          <p className="section-kicker">Northline pattern</p>
-          <p className="section-copy">Required now: warehouse, destination, and one product line. Product code and unit come from the selected product automatically.</p>
-        </div>
+        <WarehouseFlowSteps items={flowSteps} />
 
         <form
           className="workflow-form"
@@ -1383,7 +2579,7 @@ function OutboundFormEditor({
             event.preventDefault();
           }}
         >
-          <FormSection title="Basic Information" description="Capture the shipment header first so the dispatch queue has warehouse ownership, destination, and carrier context immediately.">
+          <FormSection title="Order Header" description="Start with warehouse, destination, and ship date.">
             <div className="form-section__grid form-section__grid--two">
               <ReadonlyField label="Outbound number" value={formData.outboundNo || 'Generated on save'} />
               <SearchSelectField
@@ -1436,7 +2632,7 @@ function OutboundFormEditor({
             </div>
           </FormSection>
 
-          <FormSection title="Item Details" description="Each line keeps the linked product searchable while code and unit fill in automatically to reduce picking and dispatch errors.">
+          <FormSection title="Product Lines" description="Add at least one product line with quantity before confirmation.">
             <LineItemsEditor
               lineItems={formData.lineItems}
               productOptions={productOptions}
@@ -1451,64 +2647,91 @@ function OutboundFormEditor({
             />
           </FormSection>
 
-          <FormSection title="Notes" description="Use notes for staging, carrier, or dispatch instructions that should remain visible through shipment confirmation.">
+          <FormSection title="Notes">
             <TextAreaField
               label="Outbound notes"
               value={formData.notes}
               onChange={(value) => updateField('notes', value)}
-              placeholder="Add dispatch instructions or exception notes"
+              placeholder="Add dispatch instructions or shipment exceptions"
             />
           </FormSection>
 
-          <FormActionBar
-            title="Actions"
-            description="Save the shipment as work in progress, or confirm shipment once the outbound order is ready to leave."
-            secondaryActionLabel="Save Draft"
-            primaryActionLabel="Confirm Shipment"
-            onSecondaryAction={() => saveOutbound(false)}
-            onPrimaryAction={() => saveOutbound(true)}
-          />
+          <section className="form-section form-section--actions">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">Finish</p>
+                <h2>Save or confirm</h2>
+              </div>
+              <p className="section-copy">
+                {readyToConfirm
+                  ? 'Save the shipment as work in progress or confirm it when packing review is complete.'
+                  : flowConfig.formLead}
+              </p>
+            </div>
+
+            <div className="button-row">
+              <button className="secondary-button" type="button" onClick={() => saveOutbound(false)}>
+                Save Draft
+              </button>
+              <button className="primary-button" type="button" onClick={() => saveOutbound(true)}>
+                {flowConfig.confirmLabel}
+              </button>
+              <button className="ghost-link" type="button" onClick={() => onNavigate('outbound-list')}>
+                {flowConfig.backLabel}
+              </button>
+            </div>
+          </section>
         </form>
       </section>
 
-      <RailFrame page={page} onNavigate={onNavigate}>
+      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
         {mode === 'edit' ? (
-          <SelectionRailBlock
-            title="Selected outbound"
-            description="Switch the current shipment without leaving the form."
-            label="Outbound order"
-            value={selections.outboundId}
-            options={ops.buildSelectionOptions(store, 'outbound')}
-            onChange={(value) => setSelections((current) => ({ ...current, outboundId: value }))}
-          />
+          <section className="rail-block">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">{flowConfig.selectedLabel}</p>
+                <h2>Switch order</h2>
+              </div>
+            </div>
+
+            <SearchSelectField
+              label={flowConfig.switchLabel}
+              value={selections.outboundId}
+              options={ops.buildSelectionOptions(store, 'outbound')}
+              onChange={(value) => setSelections((current) => ({ ...current, outboundId: value }))}
+              placeholder="Search shipment record"
+            />
+          </section>
         ) : (
-          <GuidanceRailBlock
-            title="Shipment flow"
-            description={ops.buildFormSummaryDetail(store, 'outbound')}
-            items={[
-              'Header fields establish destination and warehouse ownership before line entry.',
-              'Line items should always use product search to avoid code mismatch.',
-              'Confirm Shipment should be the last action after packing review.',
-            ]}
-          />
+          <section className="rail-block">
+            <div className="section-heading section-heading--stack">
+              <div>
+                <p className="section-kicker">Start here</p>
+                <h2>{flowConfig.primaryCreateLabel}</h2>
+              </div>
+              <p className="section-copy">{flowConfig.formLead}</p>
+            </div>
+          </section>
         )}
 
         <section className="rail-block">
           <div className="section-heading section-heading--stack">
             <div>
               <p className="section-kicker">Preview</p>
-              <h2>{formData.outboundNo || 'New outbound'}</h2>
+              <h2>{previewSnapshot.title}</h2>
             </div>
           </div>
 
           <div className="preview-grid">
             <PreviewStat label="Status" value={formData.status} tone={ops.getStatusTone(formData.status)} />
-            <PreviewStat label="Destination" value={formData.destination || 'Pending'} />
-            <PreviewStat label="Lines" value={String(ops.countLineItems(formData.lineItems))} />
-            <PreviewStat label="Qty total" value={String(totalUnits)} />
+            {previewSnapshot.metrics.map((metric) => (
+              <PreviewStat key={metric.label} label={metric.label} value={metric.value} />
+            ))}
           </div>
+
+          <WarehouseFlowFacts facts={previewSnapshot.facts} />
         </section>
-      </RailFrame>
+      </aside>
     </section>
   );
 }
@@ -1792,10 +3015,6 @@ function getVisibleError(key: string, errors: ErrorMap, touched: TouchedMap, sub
   return touched[key] || submitCount > 0 ? errors[key] : undefined;
 }
 
-function findOptionLabel(options: SearchOption[], value: string) {
-  return options.find((option) => option.value === value)?.label;
-}
-
 function RailFrame({
   page,
   onNavigate,
@@ -1857,56 +3076,6 @@ function RailFrame({
   );
 }
 
-function GuidanceRailBlock({ title, description, items }: { title: string; description: string; items: string[] }) {
-  return (
-    <section className="rail-block">
-      <div className="section-heading section-heading--stack">
-        <div>
-          <p className="section-kicker">Workflow notes</p>
-          <h2>{title}</h2>
-        </div>
-        <p className="section-copy">{description}</p>
-      </div>
-
-      <ul className="mono-list">
-        {items.map((item) => (
-          <li key={item}>{item}</li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function SelectionRailBlock({
-  title,
-  description,
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  title: string;
-  description: string;
-  label: string;
-  value: string;
-  options: SearchOption[];
-  onChange: (value: string) => void;
-}) {
-  return (
-    <section className="rail-block">
-      <div className="section-heading section-heading--stack">
-        <div>
-          <p className="section-kicker">Selected record</p>
-          <h2>{title}</h2>
-        </div>
-        <p className="section-copy">{description}</p>
-      </div>
-
-      <SearchSelectField label={label} value={value} options={options} onChange={onChange} placeholder={`Search ${title.toLowerCase()}`} />
-    </section>
-  );
-}
-
 function SelectionPreview({ title, detail, tone }: { title: string; detail: string; tone: string }) {
   return (
     <div className="preview-card">
@@ -1934,7 +3103,7 @@ function StatusPill({ value, toneOverride }: { value: string; toneOverride?: str
   return <span className={`status-pill status-pill--${tone}`}>{value}</span>;
 }
 
-function FormSection({ title, description, children }: { title: string; description: string; children: ReactNode }) {
+function FormSection({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
   return (
     <section className="form-section">
       <div className="section-heading section-heading--stack">
@@ -1942,46 +3111,9 @@ function FormSection({ title, description, children }: { title: string; descript
           <p className="section-kicker">{title}</p>
           <h2>{title}</h2>
         </div>
-        <p className="section-copy">{description}</p>
+        {description ? <p className="section-copy">{description}</p> : null}
       </div>
       {children}
-    </section>
-  );
-}
-
-function FormActionBar({
-  title,
-  description,
-  secondaryActionLabel,
-  primaryActionLabel,
-  onSecondaryAction,
-  onPrimaryAction,
-}: {
-  title: string;
-  description: string;
-  secondaryActionLabel: string;
-  primaryActionLabel: string;
-  onSecondaryAction: () => void;
-  onPrimaryAction: () => void;
-}) {
-  return (
-    <section className="form-section form-section--actions">
-      <div className="section-heading section-heading--stack">
-        <div>
-          <p className="section-kicker">{title}</p>
-          <h2>{title}</h2>
-        </div>
-        <p className="section-copy">{description}</p>
-      </div>
-
-      <div className="button-row">
-        <button className="secondary-button" type="button" onClick={onSecondaryAction}>
-          {secondaryActionLabel}
-        </button>
-        <button className="primary-button" type="button" onClick={onPrimaryAction}>
-          {primaryActionLabel}
-        </button>
-      </div>
     </section>
   );
 }
@@ -2227,8 +3359,8 @@ function LineItemsEditor({
     <div className="line-items">
       <div className="line-items__header">
         <div>
-          <p className="section-kicker">Line items</p>
-          <h3>Header + item rows</h3>
+          <p className="section-kicker">Order lines</p>
+          <h3>Product lines</h3>
         </div>
         <button className="secondary-button secondary-button--compact" type="button" onClick={onAddLineItem}>
           Add Line
