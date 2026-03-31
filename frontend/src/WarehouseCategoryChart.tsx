@@ -4,6 +4,8 @@ import { TooltipComponent, type TooltipComponentOption } from 'echarts/component
 import { init, use as registerEChartsModules, type ComposeOption, type EChartsType } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import type { InventoryCategoryShare } from './dashboardMock';
+import type { AuthLocale } from './content';
+import { getLocaleTag } from './content';
 
 registerEChartsModules([CanvasRenderer, TooltipComponent, PieChart]);
 
@@ -11,13 +13,14 @@ type CategoryChartOption = ComposeOption<TooltipComponentOption | PieSeriesOptio
 
 type WarehouseCategoryChartProps = {
   data: InventoryCategoryShare[];
+  locale: AuthLocale;
 };
 
-function formatQuantity(value: number) {
-  return new Intl.NumberFormat('en-US').format(value);
+function formatQuantity(value: number, locale: AuthLocale) {
+  return new Intl.NumberFormat(getLocaleTag(locale)).format(value);
 }
 
-export default function WarehouseCategoryChart({ data }: WarehouseCategoryChartProps) {
+export default function WarehouseCategoryChart({ data, locale }: WarehouseCategoryChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<EChartsType | null>(null);
 
@@ -58,28 +61,31 @@ export default function WarehouseCategoryChart({ data }: WarehouseCategoryChartP
     }
 
     const option: CategoryChartOption = {
-      animationDuration: 420,
-      animationDurationUpdate: 280,
+      animationDuration: 320,
+      animationDurationUpdate: 220,
       tooltip: {
         trigger: 'item',
-        backgroundColor: 'rgba(7, 14, 19, 0.96)',
-        borderColor: 'rgba(140, 162, 180, 0.24)',
+        backgroundColor: '#ffffff',
+        borderColor: '#dbe2ea',
+        borderWidth: 1,
         textStyle: {
-          color: '#edf5fb',
-          fontFamily: 'Space Grotesk, Segoe UI, sans-serif',
+          color: '#0f172a',
+          fontFamily: 'IBM Plex Sans, Segoe UI, sans-serif',
         },
         formatter: (params) => {
           if (typeof params === 'string' || Array.isArray(params)) {
             return `${params}`;
           }
 
-          return `${params.name}<br/>${formatQuantity(Number(params.value))} units · ${params.percent}%`;
+          return locale === 'zh'
+            ? `${params.name}<br/>${formatQuantity(Number(params.value), locale)} 件 · ${params.percent}%`
+            : `${params.name}<br/>${formatQuantity(Number(params.value), locale)} units · ${params.percent}%`;
         },
       },
       series: [
         {
           type: 'pie',
-          radius: ['54%', '78%'],
+          radius: ['52%', '76%'],
           center: ['50%', '50%'],
           minAngle: 6,
           avoidLabelOverlap: true,
@@ -91,7 +97,7 @@ export default function WarehouseCategoryChart({ data }: WarehouseCategoryChartP
           },
           itemStyle: {
             borderWidth: 3,
-            borderColor: '#09131b',
+            borderColor: '#ffffff',
           },
           data: data.map((item) => ({
             name: item.label,
@@ -105,7 +111,14 @@ export default function WarehouseCategoryChart({ data }: WarehouseCategoryChartP
     };
 
     chartRef.current.setOption(option, true);
-  }, [data]);
+  }, [data, locale]);
 
-  return <div className="dashboard-chart dashboard-chart--compact" ref={containerRef} role="img" aria-label="Inventory category share pie chart" />;
+  return (
+    <div
+      className="dashboard-chart dashboard-chart--compact"
+      ref={containerRef}
+      role="img"
+      aria-label={locale === 'zh' ? '库存分类占比图' : 'Inventory category share chart'}
+    />
+  );
 }

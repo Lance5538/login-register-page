@@ -1,12 +1,14 @@
-import type { DetailGroup, SummaryItem, TableRow, WorkspaceRoute } from './content';
+import type { WorkspaceRoute } from './content';
+import { DASHBOARD_REFRESH_INTERVAL_MS, type InventoryCategoryShare, type InventoryWarning, type WarehouseDashboardSnapshot, type WarehouseTrendPoint } from './dashboardMock';
 
-export type OperationalModuleKey = 'product' | 'category' | 'inbound' | 'outbound';
+export type OperationalModuleKey = 'inventory' | 'inbound' | 'outbound' | 'approval';
 
 export type OperationalSelections = {
-  productId: string;
-  categoryId: string;
+  inventoryId: string;
   inboundId: string;
   outboundId: string;
+  approvalKey: string;
+  userId: string;
 };
 
 export type SearchOption = {
@@ -16,28 +18,45 @@ export type SearchOption = {
   keywords: string;
 };
 
+export type ApprovalStatus = 'Pending Approval' | 'Approved' | 'Rejected';
+export type InboundStatus = 'Draft' | 'Pending Receipt' | 'Received';
+export type OutboundStatus = 'Draft' | 'Pending Shipment' | 'Shipped';
+export type ProductStatus = 'Active' | 'Hold';
+export type CategoryStatus = 'Active' | 'Hold';
+export type UserRole = 'Admin' | 'Staff';
+export type UserStatus = 'Active' | 'Invited';
+export type PermissionKey = 'view_data' | 'edit_data' | 'approve_orders' | 'manage_users' | 'assign_admin';
+
+export type WorkspaceUser = {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  status: UserStatus;
+  appointedBy: string;
+  appointedAt: string;
+  permissionsUpdatedAt: string;
+  lastLoginAt: string;
+};
+
+export type UserSession = Pick<WorkspaceUser, 'id' | 'name' | 'email' | 'role'>;
+
 export type WarehouseRecord = {
   id: string;
   warehouseCode: string;
   warehouseName: string;
+  region: string;
+  country: string;
   location: string;
+  capacity: number;
   status: 'Active' | 'Maintenance';
 };
-
-export type CategoryStatus = 'Draft' | 'Active' | 'Hold';
-export type ProductStatus = 'Draft' | 'Active' | 'Hold';
-export type InboundStatus = 'Draft' | 'Awaiting Receipt' | 'Pending QC' | 'Confirmed';
-export type OutboundStatus = 'Draft' | 'Picking' | 'Packed' | 'Shipped';
 
 export type CategoryRecord = {
   id: string;
   categoryCode: string;
   categoryName: string;
-  description: string;
   status: CategoryStatus;
-  notes: string;
-  updatedAt: string;
-  updatedBy: string;
 };
 
 export type ProductRecord = {
@@ -48,9 +67,6 @@ export type ProductRecord = {
   warehouseId: string;
   unit: string;
   status: ProductStatus;
-  notes: string;
-  createdAt: string;
-  updatedAt: string;
 };
 
 export type OrderLineItem = {
@@ -60,14 +76,22 @@ export type OrderLineItem = {
   notes: string;
 };
 
-export type InboundRecord = {
+type ApprovalMeta = {
+  approvalStatus: ApprovalStatus;
+  approvalReason: string;
+  approvalUpdatedAt: string;
+  approvedBy: string;
+  appliedAt: string;
+};
+
+export type InboundRecord = ApprovalMeta & {
   id: string;
   inboundNo: string;
   warehouseId: string;
-  status: InboundStatus;
   supplierName: string;
   referenceNo: string;
   plannedDate: string;
+  status: InboundStatus;
   createdBy: string;
   createdAt: string;
   confirmedAt: string;
@@ -75,7 +99,7 @@ export type InboundRecord = {
   lineItems: OrderLineItem[];
 };
 
-export type OutboundRecord = {
+export type OutboundRecord = ApprovalMeta & {
   id: string;
   outboundNo: string;
   warehouseId: string;
@@ -90,30 +114,25 @@ export type OutboundRecord = {
   lineItems: OrderLineItem[];
 };
 
+export type InventoryRecord = {
+  id: string;
+  productId: string;
+  warehouseId: string;
+  location: string;
+  onHandBase: number;
+  threshold: number;
+  updatedAt: string;
+};
+
 export type WorkspaceStore = {
   warehouses: WarehouseRecord[];
   categories: CategoryRecord[];
   products: ProductRecord[];
+  inventoryRecords: InventoryRecord[];
   inboundOrders: InboundRecord[];
   outboundOrders: OutboundRecord[];
-};
-
-export type ProductFormData = {
-  productCode: string;
-  productName: string;
-  categoryId: string;
-  warehouseId: string;
-  unit: string;
-  status: ProductStatus;
-  notes: string;
-};
-
-export type CategoryFormData = {
-  categoryCode: string;
-  categoryName: string;
-  description: string;
-  status: CategoryStatus;
-  notes: string;
+  users: WorkspaceUser[];
+  lastSync: string;
 };
 
 export type InboundFormData = {
@@ -122,7 +141,6 @@ export type InboundFormData = {
   supplierName: string;
   referenceNo: string;
   plannedDate: string;
-  status: InboundStatus;
   notes: string;
   lineItems: OrderLineItem[];
 };
@@ -133,47 +151,79 @@ export type OutboundFormData = {
   destination: string;
   carrier: string;
   shipmentDate: string;
-  status: OutboundStatus;
   notes: string;
   lineItems: OrderLineItem[];
 };
 
-export type DetailLineItem = {
+export type InventorySnapshot = {
   id: string;
-  productName: string;
+  productId: string;
+  warehouseId: string;
   productCode: string;
-  quantity: string;
+  productName: string;
+  categoryName: string;
+  warehouseCode: string;
+  warehouseName: string;
+  region: string;
+  country: string;
+  location: string;
   unit: string;
-  notes: string;
+  onHand: number;
+  threshold: number;
+  status: 'Healthy' | 'Low Stock' | 'Out of Stock';
+  lastUpdatedAt: string;
 };
 
-export type DetailSection = {
-  groups: DetailGroup[];
-  lineItems?: DetailLineItem[];
-  notes?: string;
-  notesLabel?: string;
+export type ApprovalQueueItem = {
+  key: string;
+  id: string;
+  module: 'Inbound' | 'Outbound';
+  orderNo: string;
+  warehouseId: string;
+  warehouseCode: string;
+  warehouseName: string;
+  partner: string;
+  orderStatus: string;
+  approvalStatus: ApprovalStatus;
+  approvalReason: string;
+  units: number;
+  createdBy: string;
+  createdAt: string;
+  approvalUpdatedAt: string;
+  approvedBy: string;
 };
 
-export const currentOperator = 'Ava Chen';
+export const inboundStatusOptions: InboundStatus[] = ['Draft', 'Pending Receipt', 'Received'];
+export const outboundStatusOptions: OutboundStatus[] = ['Draft', 'Pending Shipment', 'Shipped'];
+export const approvalStatusOptions: ApprovalStatus[] = ['Pending Approval', 'Approved', 'Rejected'];
 
-export const categoryStatusOptions: CategoryStatus[] = ['Draft', 'Active', 'Hold'];
-export const productStatusOptions: ProductStatus[] = ['Draft', 'Active', 'Hold'];
-export const inboundStatusOptions: InboundStatus[] = ['Draft', 'Awaiting Receipt', 'Pending QC', 'Confirmed'];
-export const outboundStatusOptions: OutboundStatus[] = ['Draft', 'Picking', 'Packed', 'Shipped'];
-
-const shortStampFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-});
+const rolePermissionMap: Record<UserRole, PermissionKey[]> = {
+  Admin: ['view_data', 'edit_data', 'approve_orders', 'manage_users', 'assign_admin'],
+  Staff: ['view_data', 'edit_data'],
+};
 
 const longDateFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'long',
+  month: 'short',
   day: 'numeric',
   year: 'numeric',
 });
+
+const categoryColorMap = new Map([
+  ['Fasteners', '#2563eb'],
+  ['Hardware', '#14b8a6'],
+  ['Electrical', '#f59e0b'],
+  ['Packaging', '#8b5cf6'],
+]);
+
+const historicalTrendSeed = [
+  { inbound: 82, outbound: 66 },
+  { inbound: 91, outbound: 74 },
+  { inbound: 86, outbound: 71 },
+  { inbound: 95, outbound: 79 },
+  { inbound: 88, outbound: 76 },
+  { inbound: 93, outbound: 82 },
+  { inbound: 0, outbound: 0 },
+];
 
 function timestamp(value: string) {
   return new Date(value);
@@ -188,37 +238,117 @@ function compactToken(value: string) {
     .replace(/-{2,}/g, '-');
 }
 
-function initials(value: string, maxLength: number) {
-  const tokens = value
-    .trim()
-    .split(/[^A-Za-z0-9]+/)
-    .filter(Boolean)
-    .map((token) => token.toUpperCase());
-
-  if (tokens.length === 0) {
-    return '';
-  }
-
-  if (tokens.length === 1) {
-    return tokens[0].slice(0, maxLength);
-  }
-
-  return tokens
-    .map((token) => token[0])
-    .join('')
-    .slice(0, maxLength);
+function stripControlCharacters(value: string) {
+  return Array.from(value)
+    .map((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127 ? ' ' : character;
+    })
+    .join('');
 }
 
 function createId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
 
-export function formatShortStamp(value: string) {
-  return shortStampFormatter.format(timestamp(value));
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function sameDay(left: Date, right: Date) {
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  );
+}
+
+function quantityToNumber(value: string) {
+  const parsedValue = Number(value);
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : 0;
+}
+
+function maxIso(left: string, right: string) {
+  if (!left) {
+    return right;
+  }
+
+  if (!right) {
+    return left;
+  }
+
+  return timestamp(left).getTime() >= timestamp(right).getTime() ? left : right;
+}
+
+function sanitizeInput(value: string) {
+  return stripControlCharacters(value).replace(/\s+/g, ' ').trim();
+}
+
+export function buildUserSession(user: WorkspaceUser): UserSession {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+  };
+}
+
+export function getRolePermissions(role: UserRole) {
+  return rolePermissionMap[role];
+}
+
+export function hasPermission(user: Pick<WorkspaceUser, 'role'> | UserSession | null | undefined, permission: PermissionKey) {
+  return user ? rolePermissionMap[user.role].includes(permission) : false;
+}
+
+export function canAccessWorkspaceRoute(user: Pick<WorkspaceUser, 'role'> | UserSession | null | undefined, route: WorkspaceRoute) {
+  if (route === 'approval-list') {
+    return hasPermission(user, 'approve_orders');
+  }
+
+  if (route === 'user-management-list') {
+    return hasPermission(user, 'manage_users');
+  }
+
+  return true;
+}
+
+export function getDefaultWorkspaceRoute(user: Pick<WorkspaceUser, 'role'> | UserSession | null | undefined): WorkspaceRoute {
+  if (canAccessWorkspaceRoute(user, 'dashboard')) {
+    return 'dashboard';
+  }
+
+  return 'inventory-list';
+}
+
+function buildOrderMeta() {
+  return {
+    approvalStatus: 'Pending Approval' as ApprovalStatus,
+    approvalReason: '',
+    approvalUpdatedAt: '',
+    approvedBy: '',
+    appliedAt: '',
+  };
+}
+
+export function formatShortStamp(value: string, locale = 'en-US') {
+  return new Intl.DateTimeFormat(locale, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(timestamp(value));
 }
 
 export function formatLongDate(value: string) {
   return longDateFormatter.format(timestamp(value));
+}
+
+export function nowIso() {
+  return new Date().toISOString();
 }
 
 export function todayInputValue() {
@@ -226,10 +356,6 @@ export function todayInputValue() {
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
   return `${now.getFullYear()}-${month}-${day}`;
-}
-
-export function nowIso() {
-  return new Date().toISOString();
 }
 
 export function createEmptyLineItem(): OrderLineItem {
@@ -241,6 +367,36 @@ export function createEmptyLineItem(): OrderLineItem {
   };
 }
 
+export function countLineItems(lineItems: OrderLineItem[]) {
+  return lineItems.reduce((total, lineItem) => total + (lineItem.productId ? 1 : 0), 0);
+}
+
+export function countOrderUnits(lineItems: OrderLineItem[]) {
+  return lineItems.reduce((total, lineItem) => total + quantityToNumber(lineItem.quantity), 0);
+}
+
+export function sanitizeCode(value: string) {
+  return compactToken(value);
+}
+
+export function sanitizeFreeText(value: string) {
+  return sanitizeInput(value);
+}
+
+export function sanitizeLineItems(lineItems: OrderLineItem[]) {
+  return lineItems.map((lineItem) => ({
+    ...lineItem,
+    productId: sanitizeInput(lineItem.productId),
+    quantity: lineItem.quantity.replace(/[^\d.]/g, ''),
+    notes: sanitizeInput(lineItem.notes),
+  }));
+}
+
+export function findUserByEmail(store: WorkspaceStore, email: string) {
+  const normalized = sanitizeInput(email).toLowerCase();
+  return store.users.find((item) => item.email.toLowerCase() === normalized);
+}
+
 export function createInitialWorkspaceStore(): WorkspaceStore {
   return {
     warehouses: [
@@ -248,65 +404,38 @@ export function createInitialWorkspaceStore(): WorkspaceStore {
         id: 'WH-SH-01',
         warehouseCode: 'WH-SH-01',
         warehouseName: 'Shanghai Primary Warehouse',
+        region: 'East China',
+        country: 'China',
         location: 'Shanghai',
+        capacity: 2400,
         status: 'Active',
       },
       {
         id: 'WH-NB-02',
         warehouseCode: 'WH-NB-02',
         warehouseName: 'Ningbo Flow Warehouse',
+        region: 'East China',
+        country: 'China',
         location: 'Ningbo',
+        capacity: 1800,
         status: 'Active',
       },
       {
-        id: 'WH-SZ-03',
-        warehouseCode: 'WH-SZ-03',
-        warehouseName: 'Suzhou Reserve Warehouse',
-        location: 'Suzhou',
-        status: 'Maintenance',
+        id: 'WH-DXB-01',
+        warehouseCode: 'WH-DXB-01',
+        warehouseName: 'Dubai Crossborder Hub',
+        region: 'Middle East',
+        country: 'UAE',
+        location: 'Dubai',
+        capacity: 1600,
+        status: 'Active',
       },
     ],
     categories: [
-      {
-        id: 'CAT-FAST-01',
-        categoryCode: 'CAT-FAST-01',
-        categoryName: 'Fasteners',
-        description: 'Bolts, nuts, and washers.',
-        status: 'Active',
-        notes: 'Default unit is usually Pack because these items arrive in bundled cartons.',
-        updatedAt: '2026-03-24T08:10:00',
-        updatedBy: 'Mia Lin',
-      },
-      {
-        id: 'CAT-HARD-02',
-        categoryCode: 'CAT-HARD-02',
-        categoryName: 'Hardware',
-        description: 'Clamps, brackets, and fittings.',
-        status: 'Active',
-        notes: 'Most hardware ships as individual units with visual QC at receipt.',
-        updatedAt: '2026-03-23T16:44:00',
-        updatedBy: 'Mia Lin',
-      },
-      {
-        id: 'CAT-ELEC-03',
-        categoryCode: 'CAT-ELEC-03',
-        categoryName: 'Electrical',
-        description: 'Harnesses, connectors, and sensor kits.',
-        status: 'Draft',
-        notes: 'Electrical products use serialized receiving in the later roadmap, but this pass stays lightweight.',
-        updatedAt: '2026-03-22T11:22:00',
-        updatedBy: 'Ava Chen',
-      },
-      {
-        id: 'CAT-LP-04',
-        categoryCode: 'CAT-LP-04',
-        categoryName: 'Low Priority',
-        description: 'Legacy accessories pending cleanup.',
-        status: 'Hold',
-        notes: 'Use only for tail inventory until the category is retired.',
-        updatedAt: '2026-03-21T14:06:00',
-        updatedBy: 'Leo Xu',
-      },
+      { id: 'CAT-FAST-01', categoryCode: 'CAT-FAST-01', categoryName: 'Fasteners', status: 'Active' },
+      { id: 'CAT-HARD-02', categoryCode: 'CAT-HARD-02', categoryName: 'Hardware', status: 'Active' },
+      { id: 'CAT-ELEC-03', categoryCode: 'CAT-ELEC-03', categoryName: 'Electrical', status: 'Active' },
+      { id: 'CAT-PACK-04', categoryCode: 'CAT-PACK-04', categoryName: 'Packaging', status: 'Hold' },
     ],
     products: [
       {
@@ -317,9 +446,6 @@ export function createInitialWorkspaceStore(): WorkspaceStore {
         warehouseId: 'WH-SH-01',
         unit: 'Pack',
         status: 'Active',
-        notes: 'Primary intake SKU for Dock 04 pallet receipts.',
-        createdAt: '2026-03-10T11:05:00',
-        updatedAt: '2026-03-24T08:15:00',
       },
       {
         id: 'P-NUT-B',
@@ -329,9 +455,6 @@ export function createInitialWorkspaceStore(): WorkspaceStore {
         warehouseId: 'WH-NB-02',
         unit: 'Pack',
         status: 'Active',
-        notes: 'Outbound demand usually peaks in the afternoon wave.',
-        createdAt: '2026-03-11T09:16:00',
-        updatedAt: '2026-03-24T08:02:00',
       },
       {
         id: 'P-CLAMP-D',
@@ -340,22 +463,72 @@ export function createInitialWorkspaceStore(): WorkspaceStore {
         categoryId: 'CAT-HARD-02',
         warehouseId: 'WH-SH-01',
         unit: 'Unit',
-        status: 'Hold',
-        notes: 'Hold after the last outbound due to a bracket finish discrepancy.',
-        createdAt: '2026-03-09T14:22:00',
-        updatedAt: '2026-03-23T16:49:00',
+        status: 'Active',
       },
       {
         id: 'P-SENSOR-K',
         productCode: 'P-SENSOR-K',
         productName: 'Sensor Kit K',
         categoryId: 'CAT-ELEC-03',
-        warehouseId: 'WH-SH-01',
+        warehouseId: 'WH-DXB-01',
         unit: 'Set',
-        status: 'Draft',
-        notes: 'Draft product waiting for category approval and first inbound receipt.',
-        createdAt: '2026-03-22T10:18:00',
-        updatedAt: '2026-03-22T10:18:00',
+        status: 'Active',
+      },
+      {
+        id: 'P-CARTON-L',
+        productCode: 'P-CARTON-L',
+        productName: 'Carton Roll L',
+        categoryId: 'CAT-PACK-04',
+        warehouseId: 'WH-SH-01',
+        unit: 'Roll',
+        status: 'Hold',
+      },
+    ],
+    inventoryRecords: [
+      {
+        id: 'INV-001',
+        productId: 'P-BOLT-A',
+        warehouseId: 'WH-SH-01',
+        location: 'A1-04',
+        onHandBase: 280,
+        threshold: 120,
+        updatedAt: '2026-03-24T08:40:00',
+      },
+      {
+        id: 'INV-002',
+        productId: 'P-NUT-B',
+        warehouseId: 'WH-NB-02',
+        location: 'B2-12',
+        onHandBase: 94,
+        threshold: 110,
+        updatedAt: '2026-03-24T08:10:00',
+      },
+      {
+        id: 'INV-003',
+        productId: 'P-CLAMP-D',
+        warehouseId: 'WH-SH-01',
+        location: 'C3-01',
+        onHandBase: 138,
+        threshold: 60,
+        updatedAt: '2026-03-24T07:50:00',
+      },
+      {
+        id: 'INV-004',
+        productId: 'P-SENSOR-K',
+        warehouseId: 'WH-DXB-01',
+        location: 'E1-02',
+        onHandBase: 76,
+        threshold: 36,
+        updatedAt: '2026-03-24T09:05:00',
+      },
+      {
+        id: 'INV-005',
+        productId: 'P-CARTON-L',
+        warehouseId: 'WH-SH-01',
+        location: 'P1-08',
+        onHandBase: 44,
+        threshold: 32,
+        updatedAt: '2026-03-23T17:16:00',
       },
     ],
     inboundOrders: [
@@ -363,70 +536,57 @@ export function createInitialWorkspaceStore(): WorkspaceStore {
         id: 'INB-1048',
         inboundNo: 'INB-1048',
         warehouseId: 'WH-SH-01',
-        status: 'Awaiting Receipt',
         supplierName: 'North Harbour Metals',
         referenceNo: 'ASN-7731',
-        plannedDate: '2026-03-25',
+        plannedDate: '2026-03-30',
+        status: 'Pending Receipt',
         createdBy: 'Ava Chen',
-        createdAt: '2026-03-24T08:30:00',
+        createdAt: '2026-03-30T08:30:00',
         confirmedAt: '',
-        notes: 'Dock 04 requires pallet photos before the final receipt confirmation.',
+        notes: 'Fastener replenishment for the morning receiving wave.',
         lineItems: [
-          {
-            id: createId('LINE'),
-            productId: 'P-BOLT-A',
-            quantity: '120',
-            notes: 'Check outer carton seal on arrival.',
-          },
-          {
-            id: createId('LINE'),
-            productId: 'P-CLAMP-D',
-            quantity: '18',
-            notes: 'Quality hold units can be received but should stay in staging.',
-          },
+          { id: createId('LINE'), productId: 'P-BOLT-A', quantity: '160', notes: 'Dock 01 priority.' },
+          { id: createId('LINE'), productId: 'P-CLAMP-D', quantity: '36', notes: 'Staging lane 03.' },
         ],
+        ...buildOrderMeta(),
       },
       {
         id: 'INB-1047',
         inboundNo: 'INB-1047',
-        warehouseId: 'WH-NB-02',
-        status: 'Pending QC',
-        supplierName: 'Pacific Fastener Co.',
-        referenceNo: 'ASN-7718',
-        plannedDate: '2026-03-24',
-        createdBy: 'Leo Xu',
-        createdAt: '2026-03-24T07:55:00',
-        confirmedAt: '',
-        notes: 'Receiving team flagged count variance on one pallet.',
-        lineItems: [
-          {
-            id: createId('LINE'),
-            productId: 'P-NUT-B',
-            quantity: '240',
-            notes: 'Count variance pending QC sign-off.',
-          },
-        ],
+        warehouseId: 'WH-DXB-01',
+        supplierName: 'Gulf Sensor Supply',
+        referenceNo: 'ASN-7708',
+        plannedDate: '2026-03-29',
+        status: 'Received',
+        createdBy: 'Mia Lin',
+        createdAt: '2026-03-29T10:12:00',
+        confirmedAt: '2026-03-29T11:04:00',
+        notes: 'Approved and posted into the export hub inventory.',
+        lineItems: [{ id: createId('LINE'), productId: 'P-SENSOR-K', quantity: '28', notes: 'Serial box check complete.' }],
+        approvalStatus: 'Approved',
+        approvalReason: '',
+        approvalUpdatedAt: '2026-03-29T11:04:00',
+        approvedBy: 'Ava Chen',
+        appliedAt: '2026-03-29T11:04:00',
       },
       {
         id: 'INB-1046',
         inboundNo: 'INB-1046',
-        warehouseId: 'WH-SZ-03',
-        status: 'Confirmed',
-        supplierName: 'Ridgeway Supply',
-        referenceNo: 'ASN-7684',
-        plannedDate: '2026-03-23',
-        createdBy: 'Mia Lin',
-        createdAt: '2026-03-23T18:12:00',
-        confirmedAt: '2026-03-23T19:04:00',
-        notes: 'Receipt closed after dock reconciliation.',
-        lineItems: [
-          {
-            id: createId('LINE'),
-            productId: 'P-SENSOR-K',
-            quantity: '12',
-            notes: 'Stored in inspection cage after receipt.',
-          },
-        ],
+        warehouseId: 'WH-NB-02',
+        supplierName: 'Pacific Fastener Co.',
+        referenceNo: 'ASN-7698',
+        plannedDate: '2026-03-28',
+        status: 'Pending Receipt',
+        createdBy: 'Leo Xu',
+        createdAt: '2026-03-28T15:20:00',
+        confirmedAt: '',
+        notes: 'Supplier mixed labels on two cartons.',
+        lineItems: [{ id: createId('LINE'), productId: 'P-NUT-B', quantity: '84', notes: 'Hold until relabel completed.' }],
+        approvalStatus: 'Rejected',
+        approvalReason: 'Label mismatch found on supplier cartons. Please recheck source documents.',
+        approvalUpdatedAt: '2026-03-28T18:06:00',
+        approvedBy: 'Ava Chen',
+        appliedAt: '',
       },
     ],
     outboundOrders: [
@@ -436,26 +596,17 @@ export function createInitialWorkspaceStore(): WorkspaceStore {
         warehouseId: 'WH-SH-01',
         destination: 'Hangzhou DC',
         carrier: 'BlueLine Freight',
-        shipmentDate: '2026-03-25',
-        status: 'Picking',
+        shipmentDate: '2026-03-30',
+        status: 'Pending Shipment',
         createdBy: 'Iris Wang',
-        createdAt: '2026-03-24T09:12:00',
+        createdAt: '2026-03-30T09:12:00',
         confirmedAt: '',
-        notes: 'Priority window leaves at 17:30 local time.',
+        notes: 'Retail replenishment on the afternoon linehaul.',
         lineItems: [
-          {
-            id: createId('LINE'),
-            productId: 'P-NUT-B',
-            quantity: '80',
-            notes: 'Wave 2 allocation.',
-          },
-          {
-            id: createId('LINE'),
-            productId: 'P-BOLT-A',
-            quantity: '42',
-            notes: 'Mixed pallet with nut packs.',
-          },
+          { id: createId('LINE'), productId: 'P-BOLT-A', quantity: '72', notes: 'Outbound wave 2.' },
+          { id: createId('LINE'), productId: 'P-CARTON-L', quantity: '8', notes: 'Packing support.' },
         ],
+        ...buildOrderMeta(),
       },
       {
         id: 'OUT-2026',
@@ -463,62 +614,138 @@ export function createInitialWorkspaceStore(): WorkspaceStore {
         warehouseId: 'WH-NB-02',
         destination: 'Nanjing Crossdock',
         carrier: 'Harbour Cargo',
-        shipmentDate: '2026-03-24',
-        status: 'Packed',
+        shipmentDate: '2026-03-29',
+        status: 'Shipped',
         createdBy: 'Owen Li',
-        createdAt: '2026-03-24T08:10:00',
-        confirmedAt: '',
-        notes: 'Waiting at outbound staging for carrier check-in.',
-        lineItems: [
-          {
-            id: createId('LINE'),
-            productId: 'P-NUT-B',
-            quantity: '110',
-            notes: 'Packed into four totes.',
-          },
-        ],
+        createdAt: '2026-03-29T08:10:00',
+        confirmedAt: '2026-03-29T12:45:00',
+        notes: 'Fastener replenishment for east region stores.',
+        lineItems: [{ id: createId('LINE'), productId: 'P-NUT-B', quantity: '54', notes: '4 tote shipment.' }],
+        approvalStatus: 'Approved',
+        approvalReason: '',
+        approvalUpdatedAt: '2026-03-29T12:45:00',
+        approvedBy: 'Ava Chen',
+        appliedAt: '2026-03-29T12:45:00',
       },
       {
         id: 'OUT-2025',
         outboundNo: 'OUT-2025',
-        warehouseId: 'WH-SH-01',
-        destination: 'Wuxi Retail Hub',
+        warehouseId: 'WH-DXB-01',
+        destination: 'Abu Dhabi Project Site',
         carrier: 'EastJet Logistics',
-        shipmentDate: '2026-03-23',
-        status: 'Shipped',
-        createdBy: 'Iris Wang',
-        createdAt: '2026-03-23T17:46:00',
-        confirmedAt: '2026-03-23T18:06:00',
-        notes: 'Shipment released with signed dispatch sheet.',
-        lineItems: [
-          {
-            id: createId('LINE'),
-            productId: 'P-BOLT-A',
-            quantity: '64',
-            notes: 'Delivered against weekly replenishment plan.',
-          },
-        ],
+        shipmentDate: '2026-03-28',
+        status: 'Pending Shipment',
+        createdBy: 'Noah Zhang',
+        createdAt: '2026-03-28T16:40:00',
+        confirmedAt: '',
+        notes: 'Project order paused after quantity review.',
+        lineItems: [{ id: createId('LINE'), productId: 'P-SENSOR-K', quantity: '18', notes: 'Customer requested final quantity check.' }],
+        approvalStatus: 'Rejected',
+        approvalReason: 'Requested quantity exceeds confirmed project release. Recheck demand note.',
+        approvalUpdatedAt: '2026-03-28T19:10:00',
+        approvedBy: 'Ava Chen',
+        appliedAt: '',
       },
     ],
+    users: [
+      {
+        id: 'USR-AVA',
+        name: 'Ava Chen',
+        email: 'ava.chen@northline.com',
+        role: 'Admin',
+        status: 'Active',
+        appointedBy: 'Founder',
+        appointedAt: '2026-03-01T08:00:00',
+        permissionsUpdatedAt: '2026-03-01T08:00:00',
+        lastLoginAt: '2026-03-30T08:22:00',
+      },
+      {
+        id: 'USR-IRIS',
+        name: 'Iris Wang',
+        email: 'iris.wang@northline.com',
+        role: 'Staff',
+        status: 'Active',
+        appointedBy: 'Ava Chen',
+        appointedAt: '2026-03-03T09:15:00',
+        permissionsUpdatedAt: '2026-03-03T09:15:00',
+        lastLoginAt: '2026-03-30T09:02:00',
+      },
+      {
+        id: 'USR-OWEN',
+        name: 'Owen Li',
+        email: 'owen.li@northline.com',
+        role: 'Staff',
+        status: 'Active',
+        appointedBy: 'Ava Chen',
+        appointedAt: '2026-03-03T09:40:00',
+        permissionsUpdatedAt: '2026-03-03T09:40:00',
+        lastLoginAt: '2026-03-29T08:04:00',
+      },
+      {
+        id: 'USR-NOAH',
+        name: 'Noah Zhang',
+        email: 'noah.zhang@northline.com',
+        role: 'Staff',
+        status: 'Active',
+        appointedBy: 'Ava Chen',
+        appointedAt: '2026-03-04T10:05:00',
+        permissionsUpdatedAt: '2026-03-04T10:05:00',
+        lastLoginAt: '2026-03-28T16:10:00',
+      },
+      {
+        id: 'USR-MIA',
+        name: 'Mia Lin',
+        email: 'mia.lin@northline.com',
+        role: 'Staff',
+        status: 'Active',
+        appointedBy: 'Ava Chen',
+        appointedAt: '2026-03-05T11:00:00',
+        permissionsUpdatedAt: '2026-03-05T11:00:00',
+        lastLoginAt: '2026-03-29T09:48:00',
+      },
+    ],
+    lastSync: nowIso(),
   };
 }
 
+export function buildProductOptions(store: WorkspaceStore): SearchOption[] {
+  return store.products.map((product) => {
+    const category = findCategory(store, product.categoryId);
+
+    return {
+      value: product.id,
+      label: product.productName,
+      detail: `${product.productCode} · ${product.unit}${category ? ` · ${category.categoryName}` : ''}`,
+      keywords: `${product.productCode} ${product.productName} ${product.unit} ${category?.categoryName ?? ''}`,
+    };
+  });
+}
+
+export function buildWarehouseOptions(store: WorkspaceStore): SearchOption[] {
+  return store.warehouses.map((warehouse) => ({
+    value: warehouse.id,
+    label: warehouse.warehouseName,
+    detail: `${warehouse.warehouseCode} · ${warehouse.country}`,
+    keywords: `${warehouse.warehouseCode} ${warehouse.warehouseName} ${warehouse.country} ${warehouse.location}`,
+  }));
+}
+
 export function createInitialSelections(store: WorkspaceStore): OperationalSelections {
+  const inventory = buildInventorySnapshots(store);
+  const approvalQueue = buildApprovalQueue(store);
+
   return {
-    productId: store.products[0]?.id ?? '',
-    categoryId: store.categories[0]?.id ?? '',
+    inventoryId: inventory[0]?.id ?? '',
     inboundId: store.inboundOrders[0]?.id ?? '',
     outboundId: store.outboundOrders[0]?.id ?? '',
+    approvalKey: approvalQueue[0]?.key ?? '',
+    userId: store.users[0]?.id ?? '',
   };
 }
 
 export function getOperationalModule(route: WorkspaceRoute): OperationalModuleKey | null {
-  if (route.startsWith('product-')) {
-    return 'product';
-  }
-
-  if (route.startsWith('category-')) {
-    return 'category';
+  if (route.startsWith('inventory-')) {
+    return 'inventory';
   }
 
   if (route.startsWith('inbound-')) {
@@ -529,6 +756,10 @@ export function getOperationalModule(route: WorkspaceRoute): OperationalModuleKe
     return 'outbound';
   }
 
+  if (route === 'approval-list') {
+    return 'approval';
+  }
+
   return null;
 }
 
@@ -537,7 +768,7 @@ export function isOperationalRoute(route: WorkspaceRoute) {
 }
 
 export function isOperationalFormRoute(route: WorkspaceRoute) {
-  return route.endsWith('-create') || route.endsWith('-edit');
+  return route === 'inbound-create' || route === 'inbound-edit' || route === 'outbound-create' || route === 'outbound-edit';
 }
 
 export function findWarehouse(store: WorkspaceStore, warehouseId: string) {
@@ -552,14 +783,6 @@ export function findProduct(store: WorkspaceStore, productId: string) {
   return store.products.find((item) => item.id === productId);
 }
 
-export function getSelectedCategory(store: WorkspaceStore, selections: OperationalSelections) {
-  return findCategory(store, selections.categoryId) ?? store.categories[0];
-}
-
-export function getSelectedProduct(store: WorkspaceStore, selections: OperationalSelections) {
-  return findProduct(store, selections.productId) ?? store.products[0];
-}
-
 export function getSelectedInbound(store: WorkspaceStore, selections: OperationalSelections) {
   return store.inboundOrders.find((item) => item.id === selections.inboundId) ?? store.inboundOrders[0];
 }
@@ -568,482 +791,283 @@ export function getSelectedOutbound(store: WorkspaceStore, selections: Operation
   return store.outboundOrders.find((item) => item.id === selections.outboundId) ?? store.outboundOrders[0];
 }
 
-export function getStatusTone(status: string) {
-  if (status === 'Active' || status === 'Confirmed' || status === 'Shipped') {
-    return 'positive';
+export function getSelectedInventory(store: WorkspaceStore, selections: OperationalSelections) {
+  const inventoryRows = buildInventorySnapshots(store);
+  return inventoryRows.find((row) => row.id === selections.inventoryId) ?? inventoryRows[0];
+}
+
+export function getSelectedApproval(store: WorkspaceStore, selections: OperationalSelections) {
+  const approvalQueue = buildApprovalQueue(store);
+  return approvalQueue.find((item) => item.key === selections.approvalKey) ?? approvalQueue[0];
+}
+
+export function getSelectedUser(store: WorkspaceStore, selections: OperationalSelections) {
+  return store.users.find((item) => item.id === selections.userId) ?? store.users[0];
+}
+
+export function recordUserLogin(store: WorkspaceStore, userId: string) {
+  const loggedAt = nowIso();
+
+  return {
+    ...store,
+    users: store.users.map((user) =>
+      user.id === userId
+        ? {
+            ...user,
+            lastLoginAt: loggedAt,
+            status: 'Active' as UserStatus,
+          }
+        : user,
+    ),
+    lastSync: loggedAt,
+  };
+}
+
+export function registerWorkspaceUser(
+  store: WorkspaceStore,
+  input: {
+    email: string;
+    name?: string;
+  },
+  actor?: UserSession | null,
+) {
+  const createdAt = nowIso();
+  const email = sanitizeInput(input.email).toLowerCase();
+  const fallbackName = email.split('@')[0]?.replace(/[._-]+/g, ' ') || 'Warehouse User';
+  const name =
+    sanitizeInput(input.name ?? '')
+      .split(' ')
+      .filter(Boolean)
+      .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+      .join(' ') || fallbackName.replace(/\b\w/g, (character) => character.toUpperCase());
+
+  const user: WorkspaceUser = {
+    id: createId('USR'),
+    name,
+    email,
+    role: 'Staff',
+    status: 'Active',
+    appointedBy: actor?.name ?? 'Self-service',
+    appointedAt: createdAt,
+    permissionsUpdatedAt: createdAt,
+    lastLoginAt: createdAt,
+  };
+
+  return {
+    store: {
+      ...store,
+      users: [user, ...store.users],
+      lastSync: createdAt,
+    },
+    user,
+  };
+}
+
+export function updateUserRole(store: WorkspaceStore, userId: string, nextRole: UserRole, actor: UserSession) {
+  if (!hasPermission(actor, 'manage_users')) {
+    return store;
   }
 
-  if (status === 'Hold' || status === 'Pending QC') {
-    return 'warning';
+  const targetUser = store.users.find((user) => user.id === userId);
+
+  if (!targetUser) {
+    return store;
   }
 
-  if (status === 'Draft') {
-    return 'muted';
+  const adminCount = store.users.filter((user) => user.role === 'Admin').length;
+  if (targetUser.id === actor.id && nextRole !== 'Admin' && adminCount <= 1) {
+    return store;
   }
 
-  return 'info';
-}
-
-export function suggestCategoryCode(name: string, store: WorkspaceStore) {
-  const stem = initials(name, 4) || 'CAT';
-  const nextIndex = String(store.categories.length + 1).padStart(2, '0');
-  return `CAT-${stem}-${nextIndex}`;
-}
-
-export function suggestProductCode(name: string, categoryId: string, store: WorkspaceStore) {
-  const category = findCategory(store, categoryId);
-  const categoryToken = category?.categoryCode.split('-')[1]?.slice(0, 4) ?? 'ITEM';
-  const nameToken = initials(name, 2) || 'PR';
-  return `P-${categoryToken}-${nameToken}${String(store.products.length + 1).padStart(2, '0')}`;
-}
-
-export function suggestUnit(categoryId: string, store: WorkspaceStore) {
-  const category = findCategory(store, categoryId);
-  const normalizedName = category?.categoryName.toLowerCase() ?? '';
-
-  if (normalizedName.includes('fastener')) {
-    return 'Pack';
+  if (nextRole === 'Admin' && !hasPermission(actor, 'assign_admin')) {
+    return store;
   }
 
-  if (normalizedName.includes('electrical')) {
-    return 'Set';
-  }
+  const updatedAt = nowIso();
 
-  return 'Unit';
+  return {
+    ...store,
+    users: store.users.map((user) =>
+      user.id === userId
+        ? {
+            ...user,
+            role: nextRole,
+            appointedBy: nextRole === 'Admin' ? actor.name : user.appointedBy,
+            appointedAt: nextRole === 'Admin' ? updatedAt : user.appointedAt,
+            permissionsUpdatedAt: updatedAt,
+          }
+        : user,
+    ),
+    lastSync: updatedAt,
+  };
 }
 
-export function buildWarehouseOptions(store: WorkspaceStore): SearchOption[] {
-  return store.warehouses.map((warehouse) => ({
-    value: warehouse.id,
-    label: warehouse.warehouseName,
-    detail: `${warehouse.warehouseCode} · ${warehouse.location}`,
-    keywords: `${warehouse.warehouseCode} ${warehouse.warehouseName} ${warehouse.location} ${warehouse.status}`,
-  }));
+export function buildInventorySnapshots(store: WorkspaceStore): InventorySnapshot[] {
+  const snapshotMap = new Map<
+    string,
+    {
+      base: InventoryRecord;
+      onHand: number;
+      lastUpdatedAt: string;
+    }
+  >();
+
+  store.inventoryRecords.forEach((record) => {
+    snapshotMap.set(`${record.warehouseId}:${record.productId}`, {
+      base: record,
+      onHand: record.onHandBase,
+      lastUpdatedAt: record.updatedAt,
+    });
+  });
+
+  const applyLineItems = (
+    module: 'inbound' | 'outbound',
+    warehouseId: string,
+    lineItems: OrderLineItem[],
+    appliedAt: string,
+  ) => {
+    lineItems.forEach((lineItem) => {
+      const quantity = quantityToNumber(lineItem.quantity);
+
+      if (!lineItem.productId || quantity <= 0) {
+        return;
+      }
+
+      const key = `${warehouseId}:${lineItem.productId}`;
+      const current = snapshotMap.get(key);
+
+      if (current) {
+        current.onHand += module === 'inbound' ? quantity : -quantity;
+        current.lastUpdatedAt = maxIso(current.lastUpdatedAt, appliedAt);
+        return;
+      }
+
+      snapshotMap.set(key, {
+        base: {
+          id: `INV-${warehouseId}-${lineItem.productId}`,
+          productId: lineItem.productId,
+          warehouseId,
+          location: 'AUTO-01',
+          onHandBase: 0,
+          threshold: 20,
+          updatedAt: appliedAt,
+        },
+        onHand: module === 'inbound' ? quantity : -quantity,
+        lastUpdatedAt: appliedAt,
+      });
+    });
+  };
+
+  store.inboundOrders
+    .filter((order) => order.approvalStatus === 'Approved' && order.appliedAt)
+    .forEach((order) => {
+      applyLineItems('inbound', order.warehouseId, order.lineItems, order.appliedAt);
+    });
+
+  store.outboundOrders
+    .filter((order) => order.approvalStatus === 'Approved' && order.appliedAt)
+    .forEach((order) => {
+      applyLineItems('outbound', order.warehouseId, order.lineItems, order.appliedAt);
+    });
+
+  return Array.from(snapshotMap.values())
+    .map(({ base, onHand, lastUpdatedAt }) => {
+      const product = findProduct(store, base.productId);
+      const category = product ? findCategory(store, product.categoryId) : undefined;
+      const warehouse = findWarehouse(store, base.warehouseId);
+      const normalizedOnHand = Math.max(0, onHand);
+
+      return {
+        id: base.id,
+        productId: base.productId,
+        warehouseId: base.warehouseId,
+        productCode: product?.productCode ?? base.productId,
+        productName: product?.productName ?? 'Unknown Product',
+        categoryName: category?.categoryName ?? 'Unassigned',
+        warehouseCode: warehouse?.warehouseCode ?? base.warehouseId,
+        warehouseName: warehouse?.warehouseName ?? base.warehouseId,
+        region: warehouse?.region ?? '--',
+        country: warehouse?.country ?? '--',
+        location: base.location,
+        unit: product?.unit ?? 'Unit',
+        onHand: normalizedOnHand,
+        threshold: base.threshold,
+        status: normalizedOnHand <= 0 ? 'Out of Stock' : normalizedOnHand <= base.threshold ? 'Low Stock' : 'Healthy',
+        lastUpdatedAt,
+      } satisfies InventorySnapshot;
+    })
+    .sort((left, right) => {
+      const severityRank = {
+        'Out of Stock': 0,
+        'Low Stock': 1,
+        Healthy: 2,
+      } as const;
+
+      return severityRank[left.status] - severityRank[right.status] || left.productCode.localeCompare(right.productCode);
+    });
 }
 
-export function buildCategoryOptions(store: WorkspaceStore): SearchOption[] {
-  return store.categories.map((category) => ({
-    value: category.id,
-    label: category.categoryName,
-    detail: `${category.categoryCode} · ${category.status}`,
-    keywords: `${category.categoryCode} ${category.categoryName} ${category.description} ${category.status}`,
-  }));
-}
-
-export function buildProductOptions(store: WorkspaceStore): SearchOption[] {
-  return store.products.map((product) => {
-    const category = findCategory(store, product.categoryId);
+export function buildApprovalQueue(store: WorkspaceStore): ApprovalQueueItem[] {
+  const inboundItems = store.inboundOrders.map((order) => {
+    const warehouse = findWarehouse(store, order.warehouseId);
 
     return {
-      value: product.id,
-      label: product.productName,
-      detail: `${product.productCode} · ${product.unit}${category ? ` · ${category.categoryName}` : ''}`,
-      keywords: `${product.productCode} ${product.productName} ${product.unit} ${product.status} ${category?.categoryName ?? ''}`,
-    };
+      key: `inbound:${order.id}`,
+      id: order.id,
+      module: 'Inbound',
+      orderNo: order.inboundNo,
+      warehouseId: order.warehouseId,
+      warehouseCode: warehouse?.warehouseCode ?? order.warehouseId,
+      warehouseName: warehouse?.warehouseName ?? order.warehouseId,
+      partner: order.supplierName,
+      orderStatus: order.status,
+      approvalStatus: order.approvalStatus,
+      approvalReason: order.approvalReason,
+      units: countOrderUnits(order.lineItems),
+      createdBy: order.createdBy,
+      createdAt: order.createdAt,
+      approvalUpdatedAt: order.approvalUpdatedAt,
+      approvedBy: order.approvedBy,
+    } satisfies ApprovalQueueItem;
   });
-}
 
-export function buildProductRows(store: WorkspaceStore): TableRow[] {
-  return store.products.map((product) => {
-    const category = findCategory(store, product.categoryId);
-    const warehouse = findWarehouse(store, product.warehouseId);
+  const outboundItems = store.outboundOrders.map((order) => {
+    const warehouse = findWarehouse(store, order.warehouseId);
 
     return {
-      productCode: product.productCode,
-      productName: product.productName,
-      category: category?.categoryName ?? 'Unassigned',
-      warehouse: warehouse?.warehouseCode ?? product.warehouseId,
-      unit: product.unit,
-      status: product.status,
-      updatedAt: formatShortStamp(product.updatedAt),
-    };
+      key: `outbound:${order.id}`,
+      id: order.id,
+      module: 'Outbound',
+      orderNo: order.outboundNo,
+      warehouseId: order.warehouseId,
+      warehouseCode: warehouse?.warehouseCode ?? order.warehouseId,
+      warehouseName: warehouse?.warehouseName ?? order.warehouseId,
+      partner: order.destination,
+      orderStatus: order.status,
+      approvalStatus: order.approvalStatus,
+      approvalReason: order.approvalReason,
+      units: countOrderUnits(order.lineItems),
+      createdBy: order.createdBy,
+      createdAt: order.createdAt,
+      approvalUpdatedAt: order.approvalUpdatedAt,
+      approvedBy: order.approvedBy,
+    } satisfies ApprovalQueueItem;
   });
-}
 
-export function buildCategoryRows(store: WorkspaceStore): TableRow[] {
-  return store.categories.map((category) => ({
-    categoryCode: category.categoryCode,
-    categoryName: category.categoryName,
-    description: category.description,
-    status: category.status,
-  }));
-}
+  const approvalRank = {
+    'Pending Approval': 0,
+    Rejected: 1,
+    Approved: 2,
+  } as const;
 
-export function buildInboundRows(store: WorkspaceStore): TableRow[] {
-  return store.inboundOrders.map((inbound) => {
-    const warehouse = findWarehouse(store, inbound.warehouseId);
+  return [...inboundItems, ...outboundItems].sort((left, right) => {
+    const rankDiff = approvalRank[left.approvalStatus] - approvalRank[right.approvalStatus];
+    if (rankDiff !== 0) {
+      return rankDiff;
+    }
 
-    return {
-      inboundNo: inbound.inboundNo,
-      warehouse: warehouse?.warehouseCode ?? inbound.warehouseId,
-      supplier: inbound.supplierName,
-      status: inbound.status,
-      createdBy: inbound.createdBy,
-      createdAt: formatShortStamp(inbound.createdAt),
-    };
+    return timestamp(right.approvalUpdatedAt || right.createdAt).getTime() - timestamp(left.approvalUpdatedAt || left.createdAt).getTime();
   });
-}
-
-export function buildOutboundRows(store: WorkspaceStore): TableRow[] {
-  return store.outboundOrders.map((outbound) => {
-    const warehouse = findWarehouse(store, outbound.warehouseId);
-
-    return {
-      outboundNo: outbound.outboundNo,
-      warehouse: warehouse?.warehouseCode ?? outbound.warehouseId,
-      destination: outbound.destination,
-      status: outbound.status,
-      createdBy: outbound.createdBy,
-      createdAt: formatShortStamp(outbound.createdAt),
-    };
-  });
-}
-
-export function buildProductListSummary(store: WorkspaceStore): SummaryItem[] {
-  const activeCount = store.products.filter((product) => product.status === 'Active').length;
-
-  return [
-    {
-      label: 'Products',
-      value: String(store.products.length).padStart(2, '0'),
-      detail: 'Master product records currently tracked in the local workspace store.',
-    },
-    {
-      label: 'Active',
-      value: String(activeCount).padStart(2, '0'),
-      detail: 'Products currently available for inbound and outbound workflows.',
-    },
-    {
-      label: 'Categories',
-      value: String(new Set(store.products.map((product) => product.categoryId)).size).padStart(2, '0'),
-      detail: 'Distinct categories currently linked across the product master data.',
-    },
-  ];
-}
-
-export function buildCategoryListSummary(store: WorkspaceStore): SummaryItem[] {
-  const activeCount = store.categories.filter((category) => category.status === 'Active').length;
-
-  return [
-    {
-      label: 'Categories',
-      value: String(store.categories.length).padStart(2, '0'),
-      detail: 'Product category records currently managed inside the mock workspace.',
-    },
-    {
-      label: 'Active',
-      value: String(activeCount).padStart(2, '0'),
-      detail: 'Categories available for immediate product assignment.',
-    },
-    {
-      label: 'Products linked',
-      value: String(store.products.length).padStart(3, '0'),
-      detail: 'Total product records mapped back to category ownership.',
-    },
-  ];
-}
-
-export function buildInboundListSummary(store: WorkspaceStore): SummaryItem[] {
-  const openReceipts = store.inboundOrders.filter((order) => order.status !== 'Confirmed').length;
-  const pendingQc = store.inboundOrders.filter((order) => order.status === 'Pending QC').length;
-  const activeWarehouses = new Set(store.inboundOrders.map((order) => order.warehouseId)).size;
-
-  return [
-    {
-      label: 'Open receipts',
-      value: String(openReceipts).padStart(2, '0'),
-      detail: 'Inbound orders still waiting for final warehouse confirmation.',
-    },
-    {
-      label: 'Pending QC',
-      value: String(pendingQc).padStart(2, '0'),
-      detail: 'Receipts requiring manual quantity or quality review.',
-    },
-    {
-      label: 'Warehouses',
-      value: String(activeWarehouses).padStart(2, '0'),
-      detail: 'Warehouse intake points represented in the current inbound queue.',
-    },
-  ];
-}
-
-export function buildOutboundListSummary(store: WorkspaceStore): SummaryItem[] {
-  const openShipments = store.outboundOrders.filter((order) => order.status !== 'Shipped').length;
-  const awaitingShip = store.outboundOrders.filter((order) => order.status === 'Packed').length;
-  const destinations = new Set(store.outboundOrders.map((order) => order.destination)).size;
-
-  return [
-    {
-      label: 'Outbound today',
-      value: String(openShipments).padStart(2, '0'),
-      detail: 'Orders still moving through picking, packing, or shipment confirmation.',
-    },
-    {
-      label: 'Awaiting ship',
-      value: String(awaitingShip).padStart(2, '0'),
-      detail: 'Orders packed and ready for dispatch confirmation.',
-    },
-    {
-      label: 'Destinations',
-      value: String(destinations).padStart(2, '0'),
-      detail: 'Active destination points represented in the outbound queue.',
-    },
-  ];
-}
-
-export function buildProductDetailSummary(store: WorkspaceStore, selections: OperationalSelections): SummaryItem[] {
-  const product = getSelectedProduct(store, selections);
-  const category = product ? findCategory(store, product.categoryId) : undefined;
-
-  return [
-    {
-      label: 'Product code',
-      value: product?.productCode ?? '--',
-      detail: 'Selected product record currently active in the master data flow.',
-    },
-    {
-      label: 'Category',
-      value: category?.categoryName ?? '--',
-      detail: 'Category mapping is visible directly alongside the product fields.',
-    },
-    {
-      label: 'Status',
-      value: product?.status ?? '--',
-      detail: 'The selected product state updates immediately after local saves.',
-    },
-  ];
-}
-
-export function buildCategoryDetailSummary(store: WorkspaceStore, selections: OperationalSelections): SummaryItem[] {
-  const category = getSelectedCategory(store, selections);
-
-  return [
-    {
-      label: 'Category code',
-      value: category?.categoryCode ?? '--',
-      detail: 'Selected category record currently active in the product management flow.',
-    },
-    {
-      label: 'Category name',
-      value: category?.categoryName ?? '--',
-      detail: 'The category name stays visible while linked products are maintained.',
-    },
-    {
-      label: 'Status',
-      value: category?.status ?? '--',
-      detail: 'The selected category state updates immediately after local saves.',
-    },
-  ];
-}
-
-export function buildInboundDetailSummary(store: WorkspaceStore, selections: OperationalSelections): SummaryItem[] {
-  const inbound = getSelectedInbound(store, selections);
-
-  return [
-    {
-      label: 'Inbound no.',
-      value: inbound?.inboundNo ?? '--',
-      detail: 'Selected inbound order currently active in the receiving flow.',
-    },
-    {
-      label: 'Status',
-      value: inbound?.status ?? '--',
-      detail: 'Receipt status changes immediately when the order is saved or confirmed.',
-    },
-    {
-      label: 'Supplier',
-      value: inbound?.supplierName ?? '--',
-      detail: 'Supplier context is kept close to the header fields for fast review.',
-    },
-  ];
-}
-
-export function buildOutboundDetailSummary(store: WorkspaceStore, selections: OperationalSelections): SummaryItem[] {
-  const outbound = getSelectedOutbound(store, selections);
-
-  return [
-    {
-      label: 'Outbound no.',
-      value: outbound?.outboundNo ?? '--',
-      detail: 'Selected outbound order currently active in the shipping flow.',
-    },
-    {
-      label: 'Destination',
-      value: outbound?.destination ?? '--',
-      detail: 'Destination context stays visible while shipping details are updated.',
-    },
-    {
-      label: 'Status',
-      value: outbound?.status ?? '--',
-      detail: 'Shipment status changes immediately when the order is saved or confirmed.',
-    },
-  ];
-}
-
-function buildDetailLineItems(lineItems: OrderLineItem[], store: WorkspaceStore): DetailLineItem[] {
-  return lineItems.map((lineItem) => {
-    const product = findProduct(store, lineItem.productId);
-
-    return {
-      id: lineItem.id,
-      productName: product?.productName ?? 'Unassigned product',
-      productCode: product?.productCode ?? '--',
-      quantity: lineItem.quantity || '--',
-      unit: product?.unit ?? '--',
-      notes: lineItem.notes || '--',
-    };
-  });
-}
-
-export function buildProductDetailSection(store: WorkspaceStore, selections: OperationalSelections): DetailSection {
-  const product = getSelectedProduct(store, selections);
-  const category = product ? findCategory(store, product.categoryId) : undefined;
-  const warehouse = product ? findWarehouse(store, product.warehouseId) : undefined;
-
-  return {
-    groups: product
-      ? [
-          {
-            title: 'Basic Information',
-            fields: [
-              { label: 'Product Code', value: product.productCode },
-              { label: 'Product Name', value: product.productName },
-              { label: 'Status', value: product.status },
-              { label: 'Unit', value: product.unit },
-            ],
-          },
-          {
-            title: 'Linked Context',
-            fields: [
-              { label: 'Category', value: category?.categoryName ?? 'Unassigned' },
-              { label: 'Warehouse', value: warehouse?.warehouseName ?? 'Unassigned' },
-              { label: 'Created At', value: formatLongDate(product.createdAt) },
-              { label: 'Updated At', value: formatLongDate(product.updatedAt) },
-            ],
-          },
-        ]
-      : [],
-    notes: product?.notes,
-    notesLabel: 'Product Notes',
-  };
-}
-
-export function buildCategoryDetailSection(store: WorkspaceStore, selections: OperationalSelections): DetailSection {
-  const category = getSelectedCategory(store, selections);
-  const linkedProducts = store.products.filter((product) => product.categoryId === category?.id);
-
-  return {
-    groups: category
-      ? [
-          {
-            title: 'Basic Information',
-            fields: [
-              { label: 'Category Code', value: category.categoryCode },
-              { label: 'Category Name', value: category.categoryName },
-              { label: 'Status', value: category.status },
-            ],
-          },
-          {
-            title: 'Linked Context',
-            fields: [
-              { label: 'Products Linked', value: String(linkedProducts.length) },
-              { label: 'Last Updated By', value: category.updatedBy },
-              { label: 'Updated At', value: formatLongDate(category.updatedAt) },
-            ],
-          },
-        ]
-      : [],
-    notes: category?.notes,
-    notesLabel: 'Category Notes',
-  };
-}
-
-export function buildInboundDetailSection(store: WorkspaceStore, selections: OperationalSelections): DetailSection {
-  const inbound = getSelectedInbound(store, selections);
-  const warehouse = inbound ? findWarehouse(store, inbound.warehouseId) : undefined;
-
-  return {
-    groups: inbound
-      ? [
-          {
-            title: 'Basic Information',
-            fields: [
-              { label: 'Inbound No.', value: inbound.inboundNo },
-              { label: 'Warehouse', value: warehouse?.warehouseName ?? inbound.warehouseId },
-              { label: 'Supplier', value: inbound.supplierName },
-              { label: 'Status', value: inbound.status },
-            ],
-          },
-          {
-            title: 'Receipt Details',
-            fields: [
-              { label: 'Reference No.', value: inbound.referenceNo || '--' },
-              { label: 'Planned Date', value: inbound.plannedDate },
-              { label: 'Created By', value: inbound.createdBy },
-              { label: 'Confirmed At', value: inbound.confirmedAt ? formatLongDate(inbound.confirmedAt) : 'Pending' },
-            ],
-          },
-        ]
-      : [],
-    lineItems: inbound ? buildDetailLineItems(inbound.lineItems, store) : [],
-    notes: inbound?.notes,
-    notesLabel: 'Inbound Notes',
-  };
-}
-
-export function buildOutboundDetailSection(store: WorkspaceStore, selections: OperationalSelections): DetailSection {
-  const outbound = getSelectedOutbound(store, selections);
-  const warehouse = outbound ? findWarehouse(store, outbound.warehouseId) : undefined;
-
-  return {
-    groups: outbound
-      ? [
-          {
-            title: 'Basic Information',
-            fields: [
-              { label: 'Outbound No.', value: outbound.outboundNo },
-              { label: 'Warehouse', value: warehouse?.warehouseName ?? outbound.warehouseId },
-              { label: 'Destination', value: outbound.destination },
-              { label: 'Status', value: outbound.status },
-            ],
-          },
-          {
-            title: 'Shipment Details',
-            fields: [
-              { label: 'Carrier', value: outbound.carrier || '--' },
-              { label: 'Shipment Date', value: outbound.shipmentDate },
-              { label: 'Created By', value: outbound.createdBy },
-              { label: 'Confirmed At', value: outbound.confirmedAt ? formatLongDate(outbound.confirmedAt) : 'Pending' },
-            ],
-          },
-        ]
-      : [],
-    lineItems: outbound ? buildDetailLineItems(outbound.lineItems, store) : [],
-    notes: outbound?.notes,
-    notesLabel: 'Outbound Notes',
-  };
-}
-
-export function createProductDraft(): ProductFormData {
-  return {
-    productCode: '',
-    productName: '',
-    categoryId: '',
-    warehouseId: '',
-    unit: '',
-    status: 'Draft',
-    notes: '',
-  };
-}
-
-export function createCategoryDraft(): CategoryFormData {
-  return {
-    categoryCode: '',
-    categoryName: '',
-    description: '',
-    status: 'Draft',
-    notes: '',
-  };
 }
 
 export function createInboundDraft(): InboundFormData {
@@ -1053,7 +1077,6 @@ export function createInboundDraft(): InboundFormData {
     supplierName: '',
     referenceNo: '',
     plannedDate: todayInputValue(),
-    status: 'Draft',
     notes: '',
     lineItems: [createEmptyLineItem()],
   };
@@ -1066,57 +1089,32 @@ export function createOutboundDraft(): OutboundFormData {
     destination: '',
     carrier: '',
     shipmentDate: todayInputValue(),
-    status: 'Draft',
     notes: '',
     lineItems: [createEmptyLineItem()],
   };
 }
 
-export function mapProductToFormData(product: ProductRecord): ProductFormData {
+export function mapInboundToFormData(record: InboundRecord): InboundFormData {
   return {
-    productCode: product.productCode,
-    productName: product.productName,
-    categoryId: product.categoryId,
-    warehouseId: product.warehouseId,
-    unit: product.unit,
-    status: product.status,
-    notes: product.notes,
+    inboundNo: record.inboundNo,
+    warehouseId: record.warehouseId,
+    supplierName: record.supplierName,
+    referenceNo: record.referenceNo,
+    plannedDate: record.plannedDate,
+    notes: record.notes,
+    lineItems: record.lineItems.map((lineItem) => ({ ...lineItem })),
   };
 }
 
-export function mapCategoryToFormData(category: CategoryRecord): CategoryFormData {
+export function mapOutboundToFormData(record: OutboundRecord): OutboundFormData {
   return {
-    categoryCode: category.categoryCode,
-    categoryName: category.categoryName,
-    description: category.description,
-    status: category.status,
-    notes: category.notes,
-  };
-}
-
-export function mapInboundToFormData(inbound: InboundRecord): InboundFormData {
-  return {
-    inboundNo: inbound.inboundNo,
-    warehouseId: inbound.warehouseId,
-    supplierName: inbound.supplierName,
-    referenceNo: inbound.referenceNo,
-    plannedDate: inbound.plannedDate,
-    status: inbound.status,
-    notes: inbound.notes,
-    lineItems: inbound.lineItems.map((lineItem) => ({ ...lineItem })),
-  };
-}
-
-export function mapOutboundToFormData(outbound: OutboundRecord): OutboundFormData {
-  return {
-    outboundNo: outbound.outboundNo,
-    warehouseId: outbound.warehouseId,
-    destination: outbound.destination,
-    carrier: outbound.carrier,
-    shipmentDate: outbound.shipmentDate,
-    status: outbound.status,
-    notes: outbound.notes,
-    lineItems: outbound.lineItems.map((lineItem) => ({ ...lineItem })),
+    outboundNo: record.outboundNo,
+    warehouseId: record.warehouseId,
+    destination: record.destination,
+    carrier: record.carrier,
+    shipmentDate: record.shipmentDate,
+    notes: record.notes,
+    lineItems: record.lineItems.map((lineItem) => ({ ...lineItem })),
   };
 }
 
@@ -1128,62 +1126,337 @@ export function createOutboundNumber(store: WorkspaceStore) {
   return `OUT-${String(2024 + store.outboundOrders.length + 1).padStart(4, '0')}`;
 }
 
-export function buildSelectionOptions(store: WorkspaceStore, module: OperationalModuleKey): SearchOption[] {
-  if (module === 'product') {
-    return buildProductOptions(store);
-  }
+export function saveInboundOrder(
+  store: WorkspaceStore,
+  formData: InboundFormData,
+  options: {
+    existingId?: string;
+    submitForApproval: boolean;
+    actor: UserSession;
+  },
+) {
+  const cleanedLineItems = sanitizeLineItems(formData.lineItems).filter((lineItem) => lineItem.productId && quantityToNumber(lineItem.quantity) > 0);
+  const createdAt = options.existingId ? getSelectedRecordTimestamp(store.inboundOrders, options.existingId) : nowIso();
+  const existingRecord = options.existingId ? store.inboundOrders.find((item) => item.id === options.existingId) : undefined;
 
-  if (module === 'category') {
-    return buildCategoryOptions(store);
-  }
+  const nextRecord: InboundRecord = {
+    id: options.existingId ?? createId('INB'),
+    inboundNo: sanitizeInput(formData.inboundNo) || createInboundNumber(store),
+    warehouseId: sanitizeInput(formData.warehouseId),
+    supplierName: sanitizeInput(formData.supplierName),
+    referenceNo: sanitizeInput(formData.referenceNo),
+    plannedDate: formData.plannedDate,
+    status: options.submitForApproval ? 'Pending Receipt' : 'Draft',
+    createdBy: existingRecord?.createdBy ?? options.actor.name,
+    createdAt,
+    confirmedAt: '',
+    notes: sanitizeFreeText(formData.notes),
+    lineItems: cleanedLineItems.length > 0 ? cleanedLineItems : [createEmptyLineItem()],
+    approvalStatus: options.submitForApproval ? 'Pending Approval' : existingRecord?.approvalStatus === 'Approved' ? 'Approved' : 'Pending Approval',
+    approvalReason: options.submitForApproval ? '' : existingRecord?.approvalReason ?? '',
+    approvalUpdatedAt: options.submitForApproval ? '' : existingRecord?.approvalUpdatedAt ?? '',
+    approvedBy: options.submitForApproval ? '' : existingRecord?.approvedBy ?? '',
+    appliedAt: '',
+  };
 
-  if (module === 'inbound') {
-    return store.inboundOrders.map((item) => ({
-      value: item.id,
-      label: item.inboundNo,
-      detail: `${item.supplierName} · ${item.status}`,
-      keywords: `${item.inboundNo} ${item.supplierName} ${item.status} ${item.referenceNo}`,
-    }));
-  }
-
-  return store.outboundOrders.map((item) => ({
-    value: item.id,
-    label: item.outboundNo,
-    detail: `${item.destination} · ${item.status}`,
-    keywords: `${item.outboundNo} ${item.destination} ${item.status} ${item.carrier}`,
-  }));
-}
-
-export function buildFormSummaryDetail(store: WorkspaceStore, module: OperationalModuleKey) {
-  if (module === 'product') {
-    return `${store.categories.length} categories · ${store.warehouses.length} warehouses ready for linking`;
-  }
-
-  if (module === 'category') {
-    return `${store.products.length} products can inherit this category once saved`;
-  }
-
-  if (module === 'inbound') {
-    return `${store.products.length} products available for receipt lines`;
-  }
-
-  return `${store.products.length} products available for shipment lines`;
-}
-
-export function countLineItems(lineItems: OrderLineItem[]) {
-  return lineItems.reduce((total, lineItem) => total + (lineItem.productId ? 1 : 0), 0);
-}
-
-export function buildPreviewFields(store: WorkspaceStore, lineItem: OrderLineItem) {
-  const product = findProduct(store, lineItem.productId);
+  const inboundOrders = existingRecord
+    ? store.inboundOrders.map((item) => (item.id === existingRecord.id ? nextRecord : item))
+    : [nextRecord, ...store.inboundOrders];
 
   return {
-    productCode: product?.productCode ?? '',
-    unit: product?.unit ?? '',
-    productName: product?.productName ?? '',
+    store: {
+      ...store,
+      inboundOrders,
+      lastSync: nowIso(),
+    },
+    selectionId: nextRecord.id,
   };
 }
 
-export function sanitizeCode(value: string) {
-  return compactToken(value);
+export function saveOutboundOrder(
+  store: WorkspaceStore,
+  formData: OutboundFormData,
+  options: {
+    existingId?: string;
+    submitForApproval: boolean;
+    actor: UserSession;
+  },
+) {
+  const cleanedLineItems = sanitizeLineItems(formData.lineItems).filter((lineItem) => lineItem.productId && quantityToNumber(lineItem.quantity) > 0);
+  const createdAt = options.existingId ? getSelectedRecordTimestamp(store.outboundOrders, options.existingId) : nowIso();
+  const existingRecord = options.existingId ? store.outboundOrders.find((item) => item.id === options.existingId) : undefined;
+
+  const nextRecord: OutboundRecord = {
+    id: options.existingId ?? createId('OUT'),
+    outboundNo: sanitizeInput(formData.outboundNo) || createOutboundNumber(store),
+    warehouseId: sanitizeInput(formData.warehouseId),
+    destination: sanitizeInput(formData.destination),
+    carrier: sanitizeInput(formData.carrier),
+    shipmentDate: formData.shipmentDate,
+    status: options.submitForApproval ? 'Pending Shipment' : 'Draft',
+    createdBy: existingRecord?.createdBy ?? options.actor.name,
+    createdAt,
+    confirmedAt: '',
+    notes: sanitizeFreeText(formData.notes),
+    lineItems: cleanedLineItems.length > 0 ? cleanedLineItems : [createEmptyLineItem()],
+    approvalStatus: options.submitForApproval ? 'Pending Approval' : existingRecord?.approvalStatus === 'Approved' ? 'Approved' : 'Pending Approval',
+    approvalReason: options.submitForApproval ? '' : existingRecord?.approvalReason ?? '',
+    approvalUpdatedAt: options.submitForApproval ? '' : existingRecord?.approvalUpdatedAt ?? '',
+    approvedBy: options.submitForApproval ? '' : existingRecord?.approvedBy ?? '',
+    appliedAt: '',
+  };
+
+  const outboundOrders = existingRecord
+    ? store.outboundOrders.map((item) => (item.id === existingRecord.id ? nextRecord : item))
+    : [nextRecord, ...store.outboundOrders];
+
+  return {
+    store: {
+      ...store,
+      outboundOrders,
+      lastSync: nowIso(),
+    },
+    selectionId: nextRecord.id,
+  };
+}
+
+function getSelectedRecordTimestamp(records: Array<{ id: string; createdAt: string }>, id: string) {
+  return records.find((item) => item.id === id)?.createdAt ?? nowIso();
+}
+
+export function approveOrder(store: WorkspaceStore, module: 'inbound' | 'outbound', id: string, actor: UserSession): WorkspaceStore {
+  if (!hasPermission(actor, 'approve_orders')) {
+    return store;
+  }
+
+  const approvedAt = nowIso();
+
+  if (module === 'inbound') {
+    return {
+      ...store,
+      inboundOrders: store.inboundOrders.map((order) =>
+        order.id === id
+          ? {
+              ...order,
+              status: 'Received',
+              approvalStatus: 'Approved',
+              approvalReason: '',
+              approvalUpdatedAt: approvedAt,
+              approvedBy: actor.name,
+              appliedAt: approvedAt,
+              confirmedAt: approvedAt,
+            }
+          : order,
+      ),
+      lastSync: approvedAt,
+    };
+  }
+
+  return {
+    ...store,
+    outboundOrders: store.outboundOrders.map((order) =>
+      order.id === id
+        ? {
+            ...order,
+            status: 'Shipped',
+            approvalStatus: 'Approved',
+            approvalReason: '',
+            approvalUpdatedAt: approvedAt,
+            approvedBy: actor.name,
+            appliedAt: approvedAt,
+            confirmedAt: approvedAt,
+          }
+        : order,
+    ),
+    lastSync: approvedAt,
+  };
+}
+
+export function rejectOrder(store: WorkspaceStore, module: 'inbound' | 'outbound', id: string, reason: string, actor: UserSession): WorkspaceStore {
+  if (!hasPermission(actor, 'approve_orders')) {
+    return store;
+  }
+
+  const rejectedAt = nowIso();
+  const rejectionReason = sanitizeFreeText(reason) || 'Approval rejected. Please review the order details.';
+
+  if (module === 'inbound') {
+    return {
+      ...store,
+      inboundOrders: store.inboundOrders.map((order) =>
+        order.id === id
+          ? {
+              ...order,
+              approvalStatus: 'Rejected',
+              approvalReason: rejectionReason,
+              approvalUpdatedAt: rejectedAt,
+              approvedBy: actor.name,
+              appliedAt: '',
+              confirmedAt: '',
+            }
+          : order,
+      ),
+      lastSync: rejectedAt,
+    };
+  }
+
+  return {
+    ...store,
+    outboundOrders: store.outboundOrders.map((order) =>
+      order.id === id
+        ? {
+            ...order,
+            approvalStatus: 'Rejected',
+            approvalReason: rejectionReason,
+            approvalUpdatedAt: rejectedAt,
+            approvedBy: actor.name,
+            appliedAt: '',
+            confirmedAt: '',
+          }
+        : order,
+    ),
+    lastSync: rejectedAt,
+  };
+}
+
+export function upsertInventoryRecord(store: WorkspaceStore, record: InventoryRecord) {
+  const existing = store.inventoryRecords.find((item) => item.id === record.id);
+  const inventoryRecords = existing
+    ? store.inventoryRecords.map((item) => (item.id === record.id ? record : item))
+    : [record, ...store.inventoryRecords];
+
+  return {
+    ...store,
+    inventoryRecords,
+    lastSync: nowIso(),
+  };
+}
+
+export function buildDashboardSnapshot(store: WorkspaceStore, referenceTime = new Date()): WarehouseDashboardSnapshot {
+  const inventory = buildInventorySnapshots(store);
+  const totalInventoryQuantity = inventory.reduce((sum, item) => sum + item.onHand, 0);
+  const capacityTotal = store.warehouses.reduce((sum, warehouse) => sum + warehouse.capacity, 0);
+  const warehouseSpaceUtilizationRate = Number(((totalInventoryQuantity / Math.max(capacityTotal, 1)) * 100).toFixed(1));
+  const todayInboundQuantity = store.inboundOrders
+    .filter((order) => order.approvalStatus === 'Approved' && order.appliedAt && sameDay(timestamp(order.appliedAt), referenceTime))
+    .reduce((sum, order) => sum + countOrderUnits(order.lineItems), 0);
+  const todayOutboundQuantity = store.outboundOrders
+    .filter((order) => order.approvalStatus === 'Approved' && order.appliedAt && sameDay(timestamp(order.appliedAt), referenceTime))
+    .reduce((sum, order) => sum + countOrderUnits(order.lineItems), 0);
+  const trend = buildTrendSeries(store, referenceTime);
+  const categoryShare = buildCategoryShare(inventory);
+  const warnings = buildWarningRows(inventory);
+  const previousTrendPoint = trend[trend.length - 2] ?? trend[0];
+  const currentTrendPoint = trend[trend.length - 1] ?? previousTrendPoint;
+
+  return {
+    generatedAt: store.lastSync,
+    refreshIntervalMs: DASHBOARD_REFRESH_INTERVAL_MS,
+    feedLabel: 'Mock polling active',
+    coverageLabel: `${store.warehouses.length} active warehouses across ${new Set(store.warehouses.map((item) => item.country)).size} countries`,
+    metrics: {
+      totalInventoryQuantity: {
+        value: totalInventoryQuantity,
+        comparison: `${inventory.filter((item) => item.status !== 'Healthy').length} warning records`,
+        helper: 'Current on-hand quantity after approved receipts and shipments.',
+        trendTone: 'neutral',
+      },
+      todayInboundQuantity: {
+        value: todayInboundQuantity,
+        comparison: `${todayInboundQuantity - previousTrendPoint.inbound >= 0 ? '+' : ''}${todayInboundQuantity - previousTrendPoint.inbound} vs previous day`,
+        helper: 'Approved inbound quantity posted today.',
+        trendTone: todayInboundQuantity >= previousTrendPoint.inbound ? 'positive' : 'neutral',
+      },
+      todayOutboundQuantity: {
+        value: todayOutboundQuantity,
+        comparison: `${todayOutboundQuantity - previousTrendPoint.outbound >= 0 ? '+' : ''}${todayOutboundQuantity - previousTrendPoint.outbound} vs previous day`,
+        helper: 'Approved outbound quantity deducted today.',
+        trendTone: currentTrendPoint.outbound >= previousTrendPoint.outbound ? 'positive' : 'neutral',
+      },
+      warehouseSpaceUtilizationRate: {
+        value: warehouseSpaceUtilizationRate,
+        comparison: `${warnings.length} inventory warnings`,
+        helper: 'Utilization is derived from total on-hand quantity versus site capacity.',
+        trendTone: warehouseSpaceUtilizationRate >= 85 ? 'caution' : 'neutral',
+      },
+    },
+    trend,
+    categoryShare,
+    warnings,
+  };
+}
+
+function buildTrendSeries(store: WorkspaceStore, referenceTime: Date): WarehouseTrendPoint[] {
+  return historicalTrendSeed.map((seedPoint, index) => {
+    const day = addDays(referenceTime, index - (historicalTrendSeed.length - 1));
+    const isoDate = day.toISOString();
+
+    const inboundPosted = store.inboundOrders.reduce((sum, order) => {
+      if (order.approvalStatus !== 'Approved' || !order.appliedAt || !sameDay(timestamp(order.appliedAt), day)) {
+        return sum;
+      }
+
+      return sum + countOrderUnits(order.lineItems);
+    }, 0);
+
+    const outboundPosted = store.outboundOrders.reduce((sum, order) => {
+      if (order.approvalStatus !== 'Approved' || !order.appliedAt || !sameDay(timestamp(order.appliedAt), day)) {
+        return sum;
+      }
+
+      return sum + countOrderUnits(order.lineItems);
+    }, 0);
+
+    return {
+      label: new Intl.DateTimeFormat('en-US', {
+        month: 'short',
+        day: 'numeric',
+      }).format(day),
+      isoDate,
+      inbound: seedPoint.inbound + inboundPosted,
+      outbound: seedPoint.outbound + outboundPosted,
+    };
+  });
+}
+
+function buildCategoryShare(inventory: InventorySnapshot[]): InventoryCategoryShare[] {
+  const totals = new Map<string, number>();
+
+  inventory.forEach((item) => {
+    totals.set(item.categoryName, (totals.get(item.categoryName) ?? 0) + item.onHand);
+  });
+
+  return Array.from(totals.entries())
+    .map(([label, value]) => ({
+      id: sanitizeCode(label.toLowerCase()),
+      label,
+      value,
+      color: categoryColorMap.get(label) ?? '#64748b',
+    }))
+    .sort((left, right) => right.value - left.value);
+}
+
+function buildWarningRows(inventory: InventorySnapshot[]): InventoryWarning[] {
+  return inventory
+    .filter((item) => item.onHand <= item.threshold)
+    .map((item) => {
+      const severity: InventoryWarning['severity'] = item.onHand <= Math.max(1, item.threshold * 0.6) ? 'critical' : 'warning';
+
+      return {
+        id: item.id,
+        sku: item.productCode,
+        productName: item.productName,
+        category: item.categoryName,
+        region: item.region,
+        country: item.country,
+        warehouse: item.warehouseName,
+        location: item.location,
+        onHand: item.onHand,
+        threshold: item.threshold,
+        severity,
+        recommendedAction:
+          item.onHand <= 0 ? 'Create replenishment or inbound request immediately.' : 'Review approved demand and replenish this SKU.',
+      } satisfies InventoryWarning;
+    })
+    .sort((left, right) => left.onHand - right.onHand);
 }

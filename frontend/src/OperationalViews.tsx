@@ -1,303 +1,1163 @@
-import { useDeferredValue, useEffect, useId, useRef, useState } from 'react';
-import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import type { ModulePage, Route, SummaryItem, WorkspaceRoute } from './content';
+import { useDeferredValue, useMemo, useRef, useState } from 'react';
+import type { ChangeEvent, Dispatch, SetStateAction } from 'react';
+import { getLocaleTag, type AuthLocale, type ModulePage, type Route, type WorkspaceRoute } from './content';
 import * as ops from './operations';
-import type {
-  CategoryFormData,
-  InboundFormData,
-  OperationalModuleKey,
-  OperationalSelections,
-  OrderLineItem,
-  OutboundFormData,
-  ProductFormData,
-  SearchOption,
-  WorkspaceStore,
-} from './operations';
+import { downloadWorkbook, readSpreadsheetFile, sanitizeSpreadsheetValue, type SpreadsheetRow } from './spreadsheet';
 
 type OperationalModuleViewProps = {
   route: WorkspaceRoute;
   page: ModulePage;
-  store: WorkspaceStore;
-  setStore: Dispatch<SetStateAction<WorkspaceStore>>;
-  selections: OperationalSelections;
-  setSelections: Dispatch<SetStateAction<OperationalSelections>>;
+  locale: AuthLocale;
+  store: ops.WorkspaceStore;
+  setStore: Dispatch<SetStateAction<ops.WorkspaceStore>>;
+  selections: ops.OperationalSelections;
+  setSelections: Dispatch<SetStateAction<ops.OperationalSelections>>;
   onNavigate: (route: Route) => void;
+  currentUser: ops.UserSession;
 };
 
-type ErrorMap = Record<string, string>;
-type TouchedMap = Record<string, boolean>;
-type MasterDataModule = Extract<OperationalModuleKey, 'product' | 'category'>;
-type WarehouseFlowModule = Extract<OperationalModuleKey, 'inbound' | 'outbound'>;
-type WarehouseFlowMetric = {
-  label: string;
+type FilterOption = {
   value: string;
-};
-type WarehouseFlowFact = {
   label: string;
-  value: string;
 };
-type WarehouseFlowSnapshot = {
+
+type ImportFeedback = {
+  tone: 'success' | 'error';
   title: string;
-  status: string;
   detail: string;
-  metrics: WarehouseFlowMetric[];
-  facts: WarehouseFlowFact[];
+  errors?: string[];
 };
-type WarehouseFlowStep = {
+
+type OrderModule = 'inbound' | 'outbound';
+
+const statusLabels: Record<AuthLocale, Record<string, string>> = {
+  en: {
+    Healthy: 'Healthy',
+    'Low Stock': 'Low Stock',
+    'Out of Stock': 'Out of Stock',
+    Draft: 'Draft',
+    'Pending Receipt': 'Pending Receipt',
+    Received: 'Received',
+    'Pending Shipment': 'Pending Shipment',
+    Shipped: 'Shipped',
+    'Pending Approval': 'Pending Approval',
+    Approved: 'Approved',
+    Rejected: 'Rejected',
+    Active: 'Active',
+    Invited: 'Invited',
+  },
+  zh: {
+    Healthy: '正常',
+    'Low Stock': '低库存',
+    'Out of Stock': '缺货',
+    Draft: '草稿',
+    'Pending Receipt': '待收货',
+    Received: '已收货',
+    'Pending Shipment': '待发货',
+    Shipped: '已发货',
+    'Pending Approval': '待审批',
+    Approved: '已通过',
+    Rejected: '已驳回',
+    Active: '启用',
+    Invited: '已邀请',
+  },
+};
+
+function copyByLocale<T>(locale: AuthLocale, en: T, zh: T) {
+  return locale === 'zh' ? zh : en;
+}
+
+function getLocalizedStatus(locale: AuthLocale, label: string) {
+  return statusLabels[locale][label] ?? label;
+}
+
+function getLocalizedModule(locale: AuthLocale, module: string) {
+  if (locale === 'zh') {
+    return module === 'Inbound' ? '入库' : module === 'Outbound' ? '出库' : module;
+  }
+
+  return module;
+}
+
+function getLocalizedRole(locale: AuthLocale, role: ops.UserRole) {
+  if (locale === 'zh') {
+    return role === 'Admin' ? '管理员' : '员工';
+  }
+
+  return role;
+}
+
+function formatRecordCount(locale: AuthLocale, count: number) {
+  return locale === 'zh' ? `${count} 条记录` : `${count} records`;
+}
+
+function isInboundRecord(record: ops.InboundRecord | ops.OutboundRecord): record is ops.InboundRecord {
+  return 'supplierName' in record;
+}
+
+function getApprovalChipTone(status: ops.ApprovalStatus) {
+  if (status === 'Approved') {
+    return 'positive';
+  }
+
+  if (status === 'Rejected') {
+    return 'danger';
+  }
+
+  return 'info';
+}
+
+function getStatusChipTone(status: string) {
+  if (status === 'Healthy' || status === 'Received' || status === 'Shipped') {
+    return 'positive';
+  }
+
+  if (status === 'Low Stock') {
+    return 'warning';
+  }
+
+  if (status === 'Rejected' || status === 'Out of Stock' || status === 'Hold') {
+    return 'danger';
+  }
+
+  if (status === 'Draft') {
+    return 'muted';
+  }
+
+  return 'info';
+}
+
+function StatusChip({
+  label,
+  locale,
+  tone,
+}: {
   label: string;
-  detail: string;
-  state: 'done' | 'active' | 'pending';
-};
+  locale: AuthLocale;
+  tone?: 'positive' | 'warning' | 'danger' | 'info' | 'muted';
+}) {
+  return <span className={`status-chip status-chip--${tone ?? getStatusChipTone(label)}`}>{getLocalizedStatus(locale, label)}</span>;
+}
 
-const detailRouteByModule: Record<OperationalModuleKey, WorkspaceRoute> = {
-  product: 'product-detail',
-  category: 'category-detail',
-  inbound: 'inbound-detail',
-  outbound: 'outbound-detail',
-};
-
-const editRouteByModule: Record<OperationalModuleKey, WorkspaceRoute> = {
-  product: 'product-edit',
-  category: 'category-edit',
-  inbound: 'inbound-edit',
-  outbound: 'outbound-edit',
-};
-
-export default function OperationalModuleView({
-  route,
-  page,
-  store,
-  setStore,
-  selections,
-  setSelections,
-  onNavigate,
-}: OperationalModuleViewProps) {
-  const module = ops.getOperationalModule(route);
-
-  if (!module) {
+function ImportFeedbackBanner({
+  feedback,
+  locale,
+  onClose,
+}: {
+  feedback: ImportFeedback | null;
+  locale: AuthLocale;
+  onClose: () => void;
+}) {
+  if (!feedback) {
     return null;
   }
 
-  const summary = resolveSummary(route, page.summary, store, selections);
+  return (
+    <section className={`feedback-banner feedback-banner--${feedback.tone}`}>
+      <div>
+        <strong>{feedback.title}</strong>
+        <p>{feedback.detail}</p>
+        {feedback.errors?.length ? (
+          <ul className="feedback-banner__list">
+            {feedback.errors.slice(0, 5).map((error) => (
+              <li key={error}>{error}</li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+
+      <button className="secondary-button secondary-button--compact" type="button" onClick={onClose}>
+        {copyByLocale(locale, 'Dismiss', '关闭')}
+      </button>
+    </section>
+  );
+}
+
+function AdminToolbar({
+  search,
+  onSearchChange,
+  searchPlaceholder,
+  filterValue,
+  onFilterChange,
+  filterOptions,
+  onImport,
+  onTemplate,
+  onExport,
+  onNew,
+  locale,
+  newLabel = 'New',
+}: {
+  search: string;
+  onSearchChange: (value: string) => void;
+  searchPlaceholder: string;
+  filterValue: string;
+  onFilterChange: (value: string) => void;
+  filterOptions: FilterOption[];
+  onImport: () => void;
+  onTemplate: () => void;
+  onExport: () => void;
+  onNew: () => void;
+  locale: AuthLocale;
+  newLabel?: string;
+}) {
+  return (
+    <section className="admin-toolbar">
+      <div className="admin-toolbar__filters">
+        <input
+          className="admin-input"
+          type="search"
+          value={search}
+          placeholder={searchPlaceholder}
+          onChange={(event) => onSearchChange(event.target.value)}
+        />
+
+        <select className="admin-select" value={filterValue} onChange={(event) => onFilterChange(event.target.value)}>
+          {filterOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="admin-toolbar__actions">
+        <button className="secondary-button" type="button" onClick={onImport}>
+          {copyByLocale(locale, 'Import', '导入')}
+        </button>
+        <button className="secondary-button" type="button" onClick={onTemplate}>
+          {copyByLocale(locale, 'Template', '模板')}
+        </button>
+        <button className="secondary-button" type="button" onClick={onExport}>
+          {copyByLocale(locale, 'Export', '导出')}
+        </button>
+        <button className="primary-button" type="button" onClick={onNew}>
+          {newLabel}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function DetailGrid({ items }: { items: Array<{ label: string; value: string }> }) {
+  return (
+    <dl className="detail-grid">
+      {items.map((item) => (
+        <div key={item.label} className="detail-grid__item">
+          <dt>{item.label}</dt>
+          <dd>{item.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function LineItemsTable({
+  locale,
+  store,
+  lineItems,
+  editable = false,
+  onChange,
+}: {
+  locale: AuthLocale;
+  store: ops.WorkspaceStore;
+  lineItems: ops.OrderLineItem[];
+  editable?: boolean;
+  onChange?: (lineItems: ops.OrderLineItem[]) => void;
+}) {
+  const productOptions = ops.buildProductOptions(store);
+
+  function updateLineItem(lineId: string, next: Partial<ops.OrderLineItem>) {
+    if (!onChange) {
+      return;
+    }
+
+    onChange(lineItems.map((lineItem) => (lineItem.id === lineId ? { ...lineItem, ...next } : lineItem)));
+  }
+
+  function removeLineItem(lineId: string) {
+    if (!onChange) {
+      return;
+    }
+
+    onChange(lineItems.length > 1 ? lineItems.filter((lineItem) => lineItem.id !== lineId) : [ops.createEmptyLineItem()]);
+  }
+
+  return (
+    <div className="table-wrap">
+      <table className="admin-table">
+        <thead>
+          <tr>
+            <th>{copyByLocale(locale, 'Product', '产品')}</th>
+            <th>SKU</th>
+            <th>{copyByLocale(locale, 'Quantity', '数量')}</th>
+            <th>{copyByLocale(locale, 'Unit', '单位')}</th>
+            <th>{copyByLocale(locale, 'Notes', '备注')}</th>
+            {editable ? <th>{copyByLocale(locale, 'Action', '操作')}</th> : null}
+          </tr>
+        </thead>
+        <tbody>
+          {lineItems.map((lineItem) => {
+            const product = ops.findProduct(store, lineItem.productId);
+
+            return (
+              <tr key={lineItem.id}>
+                <td>
+                  {editable ? (
+                    <select
+                      className="admin-select"
+                      value={lineItem.productId}
+                      onChange={(event) => updateLineItem(lineItem.id, { productId: event.target.value })}
+                    >
+                      <option value="">{copyByLocale(locale, 'Select product', '选择产品')}</option>
+                      {productOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="table-primary">
+                      <strong>{product?.productName ?? copyByLocale(locale, 'Unassigned product', '未分配产品')}</strong>
+                      <span>{product?.productCode ?? '--'}</span>
+                    </div>
+                  )}
+                </td>
+                <td>{product?.productCode ?? '--'}</td>
+                <td>
+                  {editable ? (
+                    <input
+                      className="admin-input"
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={lineItem.quantity}
+                      onChange={(event) => updateLineItem(lineItem.id, { quantity: event.target.value })}
+                    />
+                  ) : (
+                    lineItem.quantity || '--'
+                  )}
+                </td>
+                <td>{product?.unit ?? '--'}</td>
+                <td>
+                  {editable ? (
+                    <input
+                      className="admin-input"
+                      type="text"
+                      value={lineItem.notes}
+                      onChange={(event) => updateLineItem(lineItem.id, { notes: event.target.value })}
+                    />
+                  ) : (
+                    lineItem.notes || '--'
+                  )}
+                </td>
+                {editable ? (
+                  <td>
+                    <button className="table-action" type="button" onClick={() => removeLineItem(lineItem.id)}>
+                      {copyByLocale(locale, 'Remove', '移除')}
+                    </button>
+                  </td>
+                ) : null}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function createSheetFileName(prefix: string) {
+  const stamp = new Date().toISOString().slice(0, 10);
+  return `${prefix}-${stamp}.xlsx`;
+}
+
+function matchWarehouse(store: ops.WorkspaceStore, value: string) {
+  const normalized = value.trim().toLowerCase();
+  return store.warehouses.find(
+    (warehouse) =>
+      warehouse.id.toLowerCase() === normalized ||
+      warehouse.warehouseCode.toLowerCase() === normalized ||
+      warehouse.warehouseName.toLowerCase() === normalized,
+  );
+}
+
+function matchProductByCode(store: ops.WorkspaceStore, value: string) {
+  const normalized = value.trim().toLowerCase();
+  return store.products.find(
+    (product) => product.productCode.toLowerCase() === normalized || product.productName.toLowerCase() === normalized,
+  );
+}
+
+function parseImportedLineItems(value: string, store: ops.WorkspaceStore, locale: AuthLocale) {
+  const lineItems: ops.OrderLineItem[] = [];
+  const errors: string[] = [];
+  const segments = value
+    .split('|')
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  if (segments.length === 0) {
+    return {
+      lineItems,
+      errors: [copyByLocale(locale, 'Line Items column is empty.', '商品明细列为空。')],
+    };
+  }
+
+  segments.forEach((segment) => {
+    const [productToken, quantityToken] = segment.split(':').map((item) => item.trim());
+    const product = matchProductByCode(store, productToken);
+    const quantity = Number(quantityToken);
+
+    if (!product) {
+      errors.push(copyByLocale(locale, `Unknown product "${productToken}".`, `未知产品 "${productToken}"。`));
+      return;
+    }
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      errors.push(copyByLocale(locale, `Invalid quantity for "${productToken}".`, `"${productToken}" 的数量无效。`));
+      return;
+    }
+
+    lineItems.push({
+      ...ops.createEmptyLineItem(),
+      productId: product.id,
+      quantity: String(quantity),
+      notes: '',
+    });
+  });
+
+  return { lineItems, errors };
+}
+
+function formatOrderLineItems(lineItems: ops.OrderLineItem[], store: ops.WorkspaceStore) {
+  return lineItems
+    .map((lineItem) => {
+      const product = ops.findProduct(store, lineItem.productId);
+      return `${sanitizeSpreadsheetValue(product?.productCode ?? '--')}:${sanitizeSpreadsheetValue(lineItem.quantity || '0')}`;
+    })
+    .join(' | ');
+}
+
+function updateApprovalSelection(
+  setSelections: Dispatch<SetStateAction<ops.OperationalSelections>>,
+  item: ops.ApprovalQueueItem,
+) {
+  setSelections((current) => ({
+    ...current,
+    approvalKey: item.key,
+    inboundId: item.module === 'Inbound' ? item.id : current.inboundId,
+    outboundId: item.module === 'Outbound' ? item.id : current.outboundId,
+  }));
+}
+
+function orderModuleRoutes(module: OrderModule) {
+  return module === 'inbound'
+    ? {
+        list: 'inbound-list' as const,
+        detail: 'inbound-detail' as const,
+        create: 'inbound-create' as const,
+        edit: 'inbound-edit' as const,
+      }
+    : {
+        list: 'outbound-list' as const,
+        detail: 'outbound-detail' as const,
+        create: 'outbound-create' as const,
+        edit: 'outbound-edit' as const,
+      };
+}
+
+export default function OperationalModuleView(props: OperationalModuleViewProps) {
+  if (props.route === 'inventory-list' || props.route === 'inventory-detail') {
+    return <InventoryWorkspace {...props} />;
+  }
+
+  if (props.route === 'approval-list') {
+    if (!ops.hasPermission(props.currentUser, 'approve_orders')) {
+      return (
+        <section className="admin-panel">
+          <div className="empty-note">
+            {copyByLocale(props.locale, 'Approval Center is available to administrators only.', '审批中心仅对管理员开放。')}
+          </div>
+        </section>
+      );
+    }
+
+    return <ApprovalWorkspace {...props} />;
+  }
+
+  if (props.route === 'user-management-list') {
+    if (!ops.hasPermission(props.currentUser, 'manage_users')) {
+      return (
+        <section className="admin-panel">
+          <div className="empty-note">
+            {copyByLocale(props.locale, 'User Management is available to administrators only.', '用户管理仅对管理员开放。')}
+          </div>
+        </section>
+      );
+    }
+
+    return <UserManagementWorkspace {...props} />;
+  }
+
+  if (props.route.startsWith('inbound-') || props.route.startsWith('outbound-')) {
+    const module = props.route.startsWith('inbound-') ? 'inbound' : 'outbound';
+    if (props.route.endsWith('-create') || props.route.endsWith('-edit')) {
+      return <OrderFormWorkspace {...props} module={module} />;
+    }
+
+    return <OrderWorkspace {...props} module={module} />;
+  }
+
+  return (
+    <section className="admin-panel">
+      <div className="empty-note">
+        {copyByLocale(props.locale, 'This route is not part of the simplified warehouse admin scope.', '该路由不在当前精简后的仓储后台范围内。')}
+      </div>
+    </section>
+  );
+}
+
+function InventoryWorkspace({ store, setStore, selections, setSelections, onNavigate, route, locale }: OperationalModuleViewProps) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [search, setSearch] = useState('');
+  const [filterValue, setFilterValue] = useState('all');
+  const [feedback, setFeedback] = useState<ImportFeedback | null>(null);
+  const deferredSearch = useDeferredValue(search);
+  const inventoryRows = useMemo(() => ops.buildInventorySnapshots(store), [store]);
+  const text = {
+    searchPlaceholder: copyByLocale(locale, 'Search SKU, product, warehouse, or location', '搜索 SKU、产品、仓库或库位'),
+    allStatus: copyByLocale(locale, 'All status', '全部状态'),
+    lowStock: copyByLocale(locale, 'Low stock', '低库存'),
+    outOfStock: copyByLocale(locale, 'Out of stock', '缺货'),
+    healthy: copyByLocale(locale, 'Healthy', '正常'),
+    newInbound: copyByLocale(locale, 'New Inbound', '新建入库单'),
+    listKicker: copyByLocale(locale, 'Inventory list', '库存列表'),
+    listTitle: copyByLocale(locale, 'Stock ledger', '库存台账'),
+    product: copyByLocale(locale, 'Product', '产品'),
+    warehouse: copyByLocale(locale, 'Warehouse', '仓库'),
+    location: copyByLocale(locale, 'Location', '库位'),
+    onHand: copyByLocale(locale, 'On Hand', '现有库存'),
+    threshold: copyByLocale(locale, 'Threshold', '阈值'),
+    status: copyByLocale(locale, 'Status', '状态'),
+    action: copyByLocale(locale, 'Action', '操作'),
+    view: copyByLocale(locale, 'View', '查看'),
+    emptyList: copyByLocale(locale, 'No inventory records matched the current search.', '当前搜索条件下没有匹配的库存记录。'),
+    selectedRecord: copyByLocale(locale, 'Selected record', '当前记录'),
+    backToList: copyByLocale(locale, 'Back to list', '返回列表'),
+    category: copyByLocale(locale, 'Category', '分类'),
+    country: copyByLocale(locale, 'Country', '国家'),
+    lastUpdated: copyByLocale(locale, 'Last Updated', '最近更新'),
+    inventoryNote: copyByLocale(
+      locale,
+      'Inventory is calculated from baseline records plus approved inbound and outbound orders in the current mock workspace.',
+      '当前库存基于基础台账以及已审批通过的入库单和出库单计算得出。',
+    ),
+  };
+
+  const filteredRows = useMemo(() => {
+    const normalizedSearch = deferredSearch.trim().toLowerCase();
+
+    return inventoryRows.filter((row) => {
+      const matchesSearch =
+        normalizedSearch.length === 0 ||
+        `${row.productCode} ${row.productName} ${row.warehouseCode} ${row.warehouseName} ${row.location} ${row.country}`
+          .toLowerCase()
+          .includes(normalizedSearch);
+
+      const matchesFilter = filterValue === 'all' || row.status === filterValue;
+
+      return matchesSearch && matchesFilter;
+    });
+  }, [deferredSearch, filterValue, inventoryRows]);
+
+  const selectedRow = filteredRows.find((row) => row.id === selections.inventoryId) ?? inventoryRows.find((row) => row.id === selections.inventoryId) ?? filteredRows[0] ?? inventoryRows[0];
+
+  async function handleImport(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    const rows = await readSpreadsheetFile(file);
+    let workingStore = store;
+    let successCount = 0;
+    const errors: string[] = [];
+
+    rows.forEach((row, index) => {
+      const product = matchProductByCode(workingStore, row['Product Code'] ?? row.Product ?? '');
+      const warehouse = matchWarehouse(workingStore, row.Warehouse ?? '');
+      const location = row.Location ?? '';
+      const onHand = Number(row['On Hand'] ?? row['Qty On Hand'] ?? '');
+      const threshold = Number(row.Threshold ?? row['Low Stock Threshold'] ?? '');
+
+      if (!product || !warehouse || !location || !Number.isFinite(onHand) || !Number.isFinite(threshold)) {
+        errors.push(copyByLocale(locale, `Row ${index + 2}: missing or invalid inventory fields.`, `第 ${index + 2} 行：库存字段缺失或无效。`));
+        return;
+      }
+
+      const existing = workingStore.inventoryRecords.find(
+        (record) => record.productId === product.id && record.warehouseId === warehouse.id,
+      );
+
+      workingStore = ops.upsertInventoryRecord(workingStore, {
+        id: existing?.id ?? `INV-${warehouse.id}-${product.id}`,
+        productId: product.id,
+        warehouseId: warehouse.id,
+        location: ops.sanitizeFreeText(location),
+        onHandBase: onHand,
+        threshold,
+        updatedAt: ops.nowIso(),
+      });
+      successCount += 1;
+    });
+
+    if (successCount > 0) {
+      setStore(workingStore);
+    }
+
+    setFeedback({
+      tone: errors.length > 0 ? 'error' : 'success',
+      title: errors.length > 0 ? copyByLocale(locale, 'Inventory import completed with issues', '库存导入完成，但存在问题') : copyByLocale(locale, 'Inventory import completed', '库存导入完成'),
+      detail: copyByLocale(
+        locale,
+        `${successCount} rows imported successfully.${errors.length ? ` ${errors.length} rows need attention.` : ''}`,
+        `成功导入 ${successCount} 行。${errors.length ? `仍有 ${errors.length} 行需要处理。` : ''}`,
+      ),
+      errors,
+    });
+
+    event.target.value = '';
+  }
+
+  function handleExport() {
+    const exportRows: SpreadsheetRow[] = filteredRows.map((row) => ({
+      'Product Code': row.productCode,
+      Product: row.productName,
+      Warehouse: row.warehouseCode,
+      Country: row.country,
+      Location: row.location,
+      'On Hand': row.onHand,
+      Threshold: row.threshold,
+      Status: row.status,
+      'Last Updated': row.lastUpdatedAt,
+    }));
+
+    downloadWorkbook(createSheetFileName('inventory-export'), 'Inventory', exportRows);
+  }
+
+  function handleTemplate() {
+    downloadWorkbook(createSheetFileName('inventory-template'), 'Inventory Template', [
+      {
+        'Product Code': 'P-BOLT-A',
+        Warehouse: 'WH-SH-01',
+        Location: 'A1-04',
+        'On Hand': 180,
+        Threshold: 120,
+      },
+    ]);
+  }
 
   return (
     <>
-      <section className="summary-strip" aria-label={`${page.title} summary`}>
-        {summary.map((item) => (
-          <div className="summary-item" key={item.label}>
-            <span className="summary-item__label">{item.label}</span>
-            <strong className="summary-item__value">{item.value}</strong>
-            <p className="summary-item__detail">{item.detail}</p>
+      <input ref={inputRef} className="hidden-input" type="file" accept=".xlsx,.xls,.csv" onChange={handleImport} />
+
+      <ImportFeedbackBanner feedback={feedback} locale={locale} onClose={() => setFeedback(null)} />
+
+      <AdminToolbar
+        search={search}
+        onSearchChange={setSearch}
+        searchPlaceholder={text.searchPlaceholder}
+        filterValue={filterValue}
+        onFilterChange={setFilterValue}
+        filterOptions={[
+          { value: 'all', label: text.allStatus },
+          { value: 'Low Stock', label: text.lowStock },
+          { value: 'Out of Stock', label: text.outOfStock },
+          { value: 'Healthy', label: text.healthy },
+        ]}
+        onImport={() => inputRef.current?.click()}
+        onTemplate={handleTemplate}
+        onExport={handleExport}
+        onNew={() => onNavigate('inbound-create')}
+        locale={locale}
+        newLabel={text.newInbound}
+      />
+
+      <section className="admin-panel">
+        <div className="admin-panel__header">
+          <div>
+            <p className="section-kicker">{text.listKicker}</p>
+            <h2>{text.listTitle}</h2>
           </div>
-        ))}
+
+          <div className="admin-toolbar__actions">
+            <span className="admin-inline-note">{formatRecordCount(locale, filteredRows.length)}</span>
+          </div>
+        </div>
+
+        <div className="table-wrap">
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>SKU</th>
+                <th>{text.product}</th>
+                <th>{text.warehouse}</th>
+                <th>{text.location}</th>
+                <th>{text.onHand}</th>
+                <th>{text.threshold}</th>
+                <th>{text.status}</th>
+                <th>{text.action}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredRows.map((row) => (
+                <tr key={row.id}>
+                  <td>{row.productCode}</td>
+                  <td>
+                    <div className="table-primary">
+                      <strong>{row.productName}</strong>
+                      <span>{row.categoryName}</span>
+                    </div>
+                  </td>
+                  <td>{row.warehouseCode}</td>
+                  <td>{row.location}</td>
+                  <td>{row.onHand}</td>
+                  <td>{row.threshold}</td>
+                  <td>
+                    <StatusChip label={row.status} locale={locale} />
+                  </td>
+                  <td>
+                    <div className="table-actions">
+                      <button
+                        className="table-action"
+                        type="button"
+                        onClick={() => {
+                          setSelections((current) => ({ ...current, inventoryId: row.id }));
+                          onNavigate('inventory-detail');
+                        }}
+                      >
+                        {text.view}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {filteredRows.length === 0 ? <p className="empty-note">{text.emptyList}</p> : null}
       </section>
 
-      {page.kind === 'list' ? (
-        <OperationalListPage
-          module={module}
-          page={page}
-          store={store}
-          selections={selections}
-          setSelections={setSelections}
-          onNavigate={onNavigate}
-        />
-      ) : page.kind === 'detail' ? (
-        <OperationalDetailPage
-          module={module}
-          page={page}
-          store={store}
-          selections={selections}
-          setSelections={setSelections}
-          onNavigate={onNavigate}
-        />
-      ) : route === 'product-create' || route === 'product-edit' ? (
-        <ProductFormPage
-          mode={page.formMode ?? 'create'}
-          page={page}
-          store={store}
-          setStore={setStore}
-          selections={selections}
-          setSelections={setSelections}
-          onNavigate={onNavigate}
-        />
-      ) : route === 'category-create' || route === 'category-edit' ? (
-        <CategoryFormPage
-          mode={page.formMode ?? 'create'}
-          page={page}
-          store={store}
-          setStore={setStore}
-          selections={selections}
-          setSelections={setSelections}
-          onNavigate={onNavigate}
-        />
-      ) : route === 'inbound-create' || route === 'inbound-edit' ? (
-        <InboundFormPage
-          mode={page.formMode ?? 'create'}
-          page={page}
-          store={store}
-          setStore={setStore}
-          selections={selections}
-          setSelections={setSelections}
-          onNavigate={onNavigate}
-        />
-      ) : (
-        <OutboundFormPage
-          mode={page.formMode ?? 'create'}
-          page={page}
-          store={store}
-          setStore={setStore}
-          selections={selections}
-          setSelections={setSelections}
-          onNavigate={onNavigate}
-        />
-      )}
+      {route === 'inventory-detail' && selectedRow ? (
+        <section className="admin-panel">
+          <div className="admin-panel__header">
+            <div>
+              <p className="section-kicker">{text.selectedRecord}</p>
+              <h2>{selectedRow.productCode}</h2>
+            </div>
+
+            <div className="admin-toolbar__actions">
+              <StatusChip label={selectedRow.status} locale={locale} />
+              <button className="secondary-button" type="button" onClick={() => onNavigate('inventory-list')}>
+                {text.backToList}
+              </button>
+            </div>
+          </div>
+
+          <DetailGrid
+            items={[
+              { label: text.product, value: selectedRow.productName },
+              { label: text.category, value: selectedRow.categoryName },
+              { label: text.warehouse, value: selectedRow.warehouseName },
+              { label: text.country, value: selectedRow.country },
+              { label: text.location, value: selectedRow.location },
+              { label: text.onHand, value: `${selectedRow.onHand} ${selectedRow.unit}` },
+              { label: text.threshold, value: `${selectedRow.threshold} ${selectedRow.unit}` },
+              { label: text.lastUpdated, value: ops.formatShortStamp(selectedRow.lastUpdatedAt, getLocaleTag(locale)) },
+            ]}
+          />
+
+          <div className="admin-inline-note">{text.inventoryNote}</div>
+        </section>
+      ) : null}
     </>
   );
 }
 
-function resolveSummary(
-  route: WorkspaceRoute,
-  fallback: SummaryItem[],
-  store: WorkspaceStore,
-  selections: OperationalSelections,
-) {
-  switch (route) {
-    case 'product-list':
-      return ops.buildProductListSummary(store);
-    case 'product-detail':
-    case 'product-edit':
-      return ops.buildProductDetailSummary(store, selections);
-    case 'category-list':
-      return ops.buildCategoryListSummary(store);
-    case 'category-detail':
-    case 'category-edit':
-      return ops.buildCategoryDetailSummary(store, selections);
-    case 'inbound-list':
-      return ops.buildInboundListSummary(store);
-    case 'inbound-detail':
-    case 'inbound-edit':
-      return ops.buildInboundDetailSummary(store, selections);
-    case 'outbound-list':
-      return ops.buildOutboundListSummary(store);
-    case 'outbound-detail':
-    case 'outbound-edit':
-      return ops.buildOutboundDetailSummary(store, selections);
-    default:
-      return fallback;
-  }
-}
-
-function OperationalListPage({
+function OrderWorkspace({
   module,
-  page,
   store,
+  setStore,
   selections,
   setSelections,
   onNavigate,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  module: OperationalModuleKey;
-}) {
-  const { recordIds, rows } = buildListData(module, store);
-  const options = ops.buildSelectionOptions(store, module);
-  const currentSelection = options.find((option) => option.value === getSelectedRecordId(module, selections));
+  route,
+  locale,
+  currentUser,
+}: OperationalModuleViewProps & { module: OrderModule }) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [search, setSearch] = useState('');
+  const [filterValue, setFilterValue] = useState('all');
+  const [feedback, setFeedback] = useState<ImportFeedback | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const deferredSearch = useDeferredValue(search);
+  const routes = orderModuleRoutes(module);
+  const records = (module === 'inbound' ? store.inboundOrders : store.outboundOrders) as Array<ops.InboundRecord | ops.OutboundRecord>;
+  const selectedRecord = (
+    module === 'inbound' ? ops.getSelectedInbound(store, selections) : ops.getSelectedOutbound(store, selections)
+  ) as ops.InboundRecord | ops.OutboundRecord | undefined;
+  const isInbound = module === 'inbound';
+  const canApprove = ops.hasPermission(currentUser, 'approve_orders');
+  const text = {
+    searchPlaceholder: isInbound
+      ? copyByLocale(locale, 'Search inbound no, warehouse, or partner', '搜索入库单号、仓库或合作方')
+      : copyByLocale(locale, 'Search outbound no, warehouse, or partner', '搜索出库单号、仓库或合作方'),
+    allApprovals: copyByLocale(locale, 'All approvals', '全部审批状态'),
+    pendingApproval: copyByLocale(locale, 'Pending approval', '待审批'),
+    approved: copyByLocale(locale, 'Approved', '已通过'),
+    rejected: copyByLocale(locale, 'Rejected', '已驳回'),
+    newOrder: isInbound ? copyByLocale(locale, 'New Inbound', '新建入库单') : copyByLocale(locale, 'New Outbound', '新建出库单'),
+    listKicker: isInbound ? copyByLocale(locale, 'Inbound list', '入库列表') : copyByLocale(locale, 'Outbound list', '出库列表'),
+    listTitle: isInbound ? copyByLocale(locale, 'Receipt orders', '收货订单') : copyByLocale(locale, 'Shipment orders', '发货订单'),
+    orderNo: isInbound ? copyByLocale(locale, 'Inbound No', '入库单号') : copyByLocale(locale, 'Outbound No', '出库单号'),
+    warehouse: copyByLocale(locale, 'Warehouse', '仓库'),
+    partner: isInbound ? copyByLocale(locale, 'Supplier', '供应商') : copyByLocale(locale, 'Destination', '目的地'),
+    units: copyByLocale(locale, 'Units', '数量'),
+    orderStatus: copyByLocale(locale, 'Order Status', '订单状态'),
+    approval: copyByLocale(locale, 'Approval', '审批状态'),
+    created: copyByLocale(locale, 'Created', '创建时间'),
+    action: copyByLocale(locale, 'Action', '操作'),
+    view: copyByLocale(locale, 'View', '查看'),
+    edit: copyByLocale(locale, 'Edit', '编辑'),
+    approve: copyByLocale(locale, 'Approve', '通过'),
+    emptyList: copyByLocale(locale, 'No orders matched the current search and filters.', '当前搜索和筛选条件下没有匹配的订单。'),
+    selectedOrder: copyByLocale(locale, 'Selected order', '当前订单'),
+    backToList: copyByLocale(locale, 'Back to list', '返回列表'),
+    editOrder: copyByLocale(locale, 'Edit order', '编辑订单'),
+    supplier: copyByLocale(locale, 'Supplier', '供应商'),
+    referenceNo: copyByLocale(locale, 'Reference No', '参考单号'),
+    plannedDate: copyByLocale(locale, 'Planned Date', '计划日期'),
+    createdBy: copyByLocale(locale, 'Created By', '创建人'),
+    createdAt: copyByLocale(locale, 'Created At', '创建时间'),
+    destination: copyByLocale(locale, 'Destination', '目的地'),
+    carrier: copyByLocale(locale, 'Carrier', '承运商'),
+    shipmentDate: copyByLocale(locale, 'Shipment Date', '发运日期'),
+    orderNotes: copyByLocale(locale, 'Order notes', '订单备注'),
+    noNotes: copyByLocale(locale, 'No notes provided.', '未填写备注。'),
+    rejectionReason: copyByLocale(locale, 'Rejection reason', '驳回原因'),
+    approvalDecision: copyByLocale(locale, 'Approval decision', '审批决策'),
+    approvalHint: copyByLocale(locale, 'Inventory will update only after this order is approved.', '只有订单审批通过后才会更新库存。'),
+    approvalRestricted: copyByLocale(locale, 'Approval actions are restricted to administrators.', '审批操作仅限管理员执行。'),
+    rejectPlaceholder: copyByLocale(locale, 'Optional rejection reason', '可填写驳回原因'),
+    reject: copyByLocale(locale, 'Reject', '驳回'),
+    postedNote: copyByLocale(locale, 'This order has already updated inventory in the current mock workspace.', '该订单已经在当前 mock 工作区中更新了库存。'),
+    approvalBy: copyByLocale(locale, 'Approved By', '审批人'),
+    approvalAt: copyByLocale(locale, 'Approval Time', '审批时间'),
+    approvalResult: copyByLocale(locale, 'Approval Result', '审批结果'),
+  };
 
-  if (isWarehouseFlowModule(module)) {
-    return (
-      <WarehouseFlowListPage
-        module={module}
-        page={page}
-        store={store}
-        selections={selections}
-        setSelections={setSelections}
-        onNavigate={onNavigate}
-        recordIds={recordIds}
-        rows={rows}
-        options={options}
-      />
-    );
+  const filteredRecords = useMemo(() => {
+    const normalizedSearch = deferredSearch.trim().toLowerCase();
+
+    return records.filter((record) => {
+      const warehouse = ops.findWarehouse(store, record.warehouseId);
+      const partner = isInboundRecord(record) ? record.supplierName : record.destination;
+      const orderNo = isInboundRecord(record) ? record.inboundNo : record.outboundNo;
+      const matchesSearch =
+        normalizedSearch.length === 0 ||
+        `${orderNo} ${partner} ${warehouse?.warehouseCode ?? ''} ${warehouse?.warehouseName ?? ''} ${record.notes}`
+          .toLowerCase()
+          .includes(normalizedSearch);
+      const matchesFilter = filterValue === 'all' || record.approvalStatus === filterValue;
+      return matchesSearch && matchesFilter;
+    });
+  }, [deferredSearch, filterValue, records, store]);
+
+  const detailRecord =
+    filteredRecords.find((record) => record.id === selectedRecord?.id) ??
+    records.find((record) => record.id === selectedRecord?.id) ??
+    filteredRecords[0] ??
+    selectedRecord;
+  const inboundDetailRecord = detailRecord && isInboundRecord(detailRecord) ? detailRecord : undefined;
+  const outboundDetailRecord = detailRecord && !isInboundRecord(detailRecord) ? detailRecord : undefined;
+
+  async function handleImport(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    const rows = await readSpreadsheetFile(file);
+    let workingStore = store;
+    let successCount = 0;
+    const errors: string[] = [];
+
+    rows.forEach((row, index) => {
+      const warehouse = matchWarehouse(workingStore, row.Warehouse ?? '');
+      const parsedLineItems = parseImportedLineItems(row['Line Items'] ?? row['Product Lines'] ?? '', workingStore, locale);
+
+      if (!warehouse || parsedLineItems.errors.length > 0) {
+        errors.push(
+          copyByLocale(
+            locale,
+            `Row ${index + 2}: ${warehouse ? parsedLineItems.errors.join(' ') : 'Warehouse not found.'}`,
+            `第 ${index + 2} 行：${warehouse ? parsedLineItems.errors.join(' ') : '未找到仓库。'}`,
+          ),
+        );
+        return;
+      }
+
+      if (module === 'inbound') {
+        if (!row.Supplier) {
+          errors.push(copyByLocale(locale, `Row ${index + 2}: Supplier is required.`, `第 ${index + 2} 行：供应商必填。`));
+          return;
+        }
+
+        const result = ops.saveInboundOrder(
+          workingStore,
+          {
+            inboundNo: row['Inbound No'] ?? '',
+            warehouseId: warehouse.id,
+            supplierName: row.Supplier,
+            referenceNo: row['Reference No'] ?? '',
+            plannedDate: row['Planned Date'] ?? ops.todayInputValue(),
+            notes: row.Notes ?? '',
+            lineItems: parsedLineItems.lineItems,
+          },
+          { submitForApproval: true, actor: currentUser },
+        );
+
+        workingStore = result.store;
+        successCount += 1;
+        return;
+      }
+
+      if (!row.Destination) {
+        errors.push(copyByLocale(locale, `Row ${index + 2}: Destination is required.`, `第 ${index + 2} 行：目的地必填。`));
+        return;
+      }
+
+      const result = ops.saveOutboundOrder(
+        workingStore,
+        {
+          outboundNo: row['Outbound No'] ?? '',
+          warehouseId: warehouse.id,
+          destination: row.Destination,
+          carrier: row.Carrier ?? '',
+          shipmentDate: row['Shipment Date'] ?? ops.todayInputValue(),
+          notes: row.Notes ?? '',
+          lineItems: parsedLineItems.lineItems,
+        },
+        { submitForApproval: true, actor: currentUser },
+      );
+
+      workingStore = result.store;
+      successCount += 1;
+    });
+
+    if (successCount > 0) {
+      setStore(workingStore);
+    }
+
+    setFeedback({
+      tone: errors.length > 0 ? 'error' : 'success',
+      title: errors.length > 0 ? copyByLocale(locale, 'Import finished with warnings', '导入完成，但存在提醒') : copyByLocale(locale, 'Import completed', '导入完成'),
+      detail: copyByLocale(
+        locale,
+        `${successCount} ${module} orders imported.${errors.length ? ` ${errors.length} rows need review.` : ''}`,
+        `成功导入 ${successCount} 条${isInbound ? '入库' : '出库'}订单。${errors.length ? `仍有 ${errors.length} 行需要检查。` : ''}`,
+      ),
+      errors,
+    });
+
+    event.target.value = '';
   }
 
-  if (isMasterDataModule(module)) {
-    return (
-      <MasterDataListPage
-        module={module}
-        page={page}
-        store={store}
-        selections={selections}
-        setSelections={setSelections}
-        onNavigate={onNavigate}
-        recordIds={recordIds}
-        rows={rows}
-        options={options}
-      />
-    );
+  function handleExport() {
+    const exportRows: SpreadsheetRow[] =
+      module === 'inbound'
+        ? filteredRecords.filter(isInboundRecord).map((record) => {
+            const warehouse = ops.findWarehouse(store, record.warehouseId);
+            return {
+              'Inbound No': record.inboundNo,
+              Warehouse: warehouse?.warehouseCode ?? record.warehouseId,
+              Supplier: record.supplierName,
+              'Reference No': record.referenceNo,
+              'Planned Date': record.plannedDate,
+              'Line Items': formatOrderLineItems(record.lineItems, store),
+              'Order Status': record.status,
+              Approval: record.approvalStatus,
+              Notes: record.notes,
+            };
+          })
+        : filteredRecords.filter((record): record is ops.OutboundRecord => !isInboundRecord(record)).map((record) => {
+            const warehouse = ops.findWarehouse(store, record.warehouseId);
+            return {
+              'Outbound No': record.outboundNo,
+              Warehouse: warehouse?.warehouseCode ?? record.warehouseId,
+              Destination: record.destination,
+              Carrier: record.carrier,
+              'Shipment Date': record.shipmentDate,
+              'Line Items': formatOrderLineItems(record.lineItems, store),
+              'Order Status': record.status,
+              Approval: record.approvalStatus,
+              Notes: record.notes,
+            };
+          });
+
+    downloadWorkbook(createSheetFileName(`${module}-export`), module === 'inbound' ? 'Inbound' : 'Outbound', exportRows);
+  }
+
+  function handleTemplate() {
+    downloadWorkbook(createSheetFileName(`${module}-template`), module === 'inbound' ? 'Inbound Template' : 'Outbound Template', [
+      module === 'inbound'
+        ? {
+            'Inbound No': 'INB-2001',
+            Warehouse: 'WH-SH-01',
+            Supplier: 'North Harbour Metals',
+            'Reference No': 'ASN-9001',
+            'Planned Date': '2026-03-30',
+            'Line Items': 'P-BOLT-A:120 | P-CLAMP-D:24',
+            Notes: 'Imported sample inbound request',
+          }
+        : {
+            'Outbound No': 'OUT-3001',
+            Warehouse: 'WH-NB-02',
+            Destination: 'Hangzhou DC',
+            Carrier: 'BlueLine Freight',
+            'Shipment Date': '2026-03-30',
+            'Line Items': 'P-NUT-B:48',
+            Notes: 'Imported sample outbound request',
+          },
+    ]);
+  }
+
+  function quickApprove(id: string) {
+    setStore((current) => ops.approveOrder(current, module, id, currentUser));
+  }
+
+  function submitReject() {
+    if (!detailRecord) {
+      return;
+    }
+
+    setStore((current) => ops.rejectOrder(current, module, detailRecord.id, rejectReason, currentUser));
+    setRejectReason('');
   }
 
   return (
-    <section className="workspace-layout">
-      <section className="page-panel page-panel--main">
-        <div className="section-heading">
-          <div>
-            <p className="section-kicker">Operational queue</p>
-            <h2>{page.title}</h2>
-          </div>
-          <p className="section-copy">Use the list for fast scanning, then jump directly into detail or edit without leaving the current module flow.</p>
-        </div>
+    <>
+      <input ref={inputRef} className="hidden-input" type="file" accept=".xlsx,.xls,.csv" onChange={handleImport} />
 
-        <div className="button-row">
-          {page.actions.map((action) => (
-            <button
-              key={action.label}
-              className={action.tone === 'primary' ? 'primary-button' : 'secondary-button'}
-              type="button"
-              onClick={() => onNavigate(action.route)}
-            >
-              {action.label}
-            </button>
-          ))}
+      <ImportFeedbackBanner feedback={feedback} locale={locale} onClose={() => setFeedback(null)} />
+
+      <AdminToolbar
+        search={search}
+        onSearchChange={setSearch}
+        searchPlaceholder={text.searchPlaceholder}
+        filterValue={filterValue}
+        onFilterChange={setFilterValue}
+        filterOptions={[
+          { value: 'all', label: text.allApprovals },
+          { value: 'Pending Approval', label: text.pendingApproval },
+          { value: 'Approved', label: text.approved },
+          { value: 'Rejected', label: text.rejected },
+        ]}
+        onImport={() => inputRef.current?.click()}
+        onTemplate={handleTemplate}
+        onExport={handleExport}
+        onNew={() => onNavigate(routes.create)}
+        locale={locale}
+        newLabel={text.newOrder}
+      />
+
+      <section className="admin-panel">
+        <div className="admin-panel__header">
+          <div>
+            <p className="section-kicker">{text.listKicker}</p>
+            <h2>{text.listTitle}</h2>
+          </div>
+
+          <div className="admin-toolbar__actions">
+            <span className="admin-inline-note">{formatRecordCount(locale, filteredRecords.length)}</span>
+          </div>
         </div>
 
         <div className="table-wrap">
-          <table className="orders-table">
+          <table className="admin-table">
             <thead>
               <tr>
-                {page.columns?.map((column) => (
-                  <th key={column.key}>{column.label}</th>
-                ))}
-                <th>Actions</th>
+                <th>{text.orderNo}</th>
+                <th>{text.warehouse}</th>
+                <th>{text.partner}</th>
+                <th>{text.units}</th>
+                <th>{text.orderStatus}</th>
+                <th>{text.approval}</th>
+                <th>{text.created}</th>
+                <th>{text.action}</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, index) => {
-                const recordId = recordIds[index];
+              {filteredRecords.map((record) => {
+                const warehouse = ops.findWarehouse(store, record.warehouseId);
+                const orderNo = isInboundRecord(record) ? record.inboundNo : record.outboundNo;
+                const partner = isInboundRecord(record) ? record.supplierName : record.destination;
 
                 return (
-                  <tr key={recordId}>
-                    {page.columns?.map((column) => (
-                      <td key={column.key}>{renderTableCell(column.key, row[column.key] ?? '--')}</td>
-                    ))}
+                  <tr key={record.id}>
+                    <td>{orderNo}</td>
+                    <td>{warehouse?.warehouseCode ?? record.warehouseId}</td>
+                    <td>{partner}</td>
+                    <td>{ops.countOrderUnits(record.lineItems)}</td>
+                    <td>
+                      <StatusChip label={record.status} locale={locale} />
+                    </td>
+                    <td>
+                      <StatusChip label={record.approvalStatus} locale={locale} tone={getApprovalChipTone(record.approvalStatus)} />
+                    </td>
+                    <td>{ops.formatShortStamp(record.createdAt, getLocaleTag(locale))}</td>
                     <td>
                       <div className="table-actions">
                         <button
-                          className="table-action-link"
+                          className="table-action"
                           type="button"
                           onClick={() => {
-                            setRecordSelection(module, recordId, setSelections);
-                            onNavigate(detailRouteByModule[module]);
+                            setSelections((current) => ({
+                              ...current,
+                              inboundId: module === 'inbound' ? record.id : current.inboundId,
+                              outboundId: module === 'outbound' ? record.id : current.outboundId,
+                            }));
+                            onNavigate(routes.detail);
                           }}
                         >
-                          View
+                          {text.view}
                         </button>
-                        <button
-                          className="table-action-link table-action-link--accent"
-                          type="button"
-                          onClick={() => {
-                            setRecordSelection(module, recordId, setSelections);
-                            onNavigate(editRouteByModule[module]);
-                          }}
-                        >
-                          Edit
-                        </button>
+
+                        {record.approvalStatus !== 'Approved' ? (
+                          <button
+                            className="table-action"
+                            type="button"
+                            onClick={() => {
+                              setSelections((current) => ({
+                                ...current,
+                                inboundId: module === 'inbound' ? record.id : current.inboundId,
+                                outboundId: module === 'outbound' ? record.id : current.outboundId,
+                              }));
+                              onNavigate(routes.edit);
+                            }}
+                          >
+                            {text.edit}
+                          </button>
+                        ) : null}
+
+                        {record.approvalStatus === 'Pending Approval' && canApprove ? (
+                          <button className="table-action table-action--primary" type="button" onClick={() => quickApprove(record.id)}>
+                            {text.approve}
+                          </button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -306,3124 +1166,986 @@ function OperationalListPage({
             </tbody>
           </table>
         </div>
+
+        {filteredRecords.length === 0 ? <p className="empty-note">{text.emptyList}</p> : null}
       </section>
 
-      <RailFrame page={page} onNavigate={onNavigate}>
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
+      {route === routes.detail && detailRecord ? (
+        <section className="admin-panel">
+          <div className="admin-panel__header">
             <div>
-              <p className="section-kicker">Current selection</p>
-              <h2>{currentSelection?.label ?? 'No record selected'}</h2>
+              <p className="section-kicker">{text.selectedOrder}</p>
+              <h2>{inboundDetailRecord ? inboundDetailRecord.inboundNo : outboundDetailRecord?.outboundNo}</h2>
             </div>
-            <p className="section-copy">The list keeps one active record ready for detail and edit flows.</p>
+
+            <div className="admin-toolbar__actions">
+              <StatusChip label={detailRecord.status} locale={locale} />
+              <StatusChip label={detailRecord.approvalStatus} locale={locale} tone={getApprovalChipTone(detailRecord.approvalStatus)} />
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => onNavigate(detailRecord.approvalStatus === 'Approved' ? routes.list : routes.edit)}
+              >
+                {detailRecord.approvalStatus === 'Approved' ? text.backToList : text.editOrder}
+              </button>
+            </div>
           </div>
 
-          <SelectionPreview
-            title={currentSelection?.label ?? 'Select a record'}
-            detail={currentSelection?.detail ?? 'Choose any record from the table or picker.'}
-            tone={getSelectionTone(module, store, selections)}
+          <DetailGrid
+            items={
+              inboundDetailRecord
+                ? [
+                    { label: text.warehouse, value: ops.findWarehouse(store, inboundDetailRecord.warehouseId)?.warehouseName ?? inboundDetailRecord.warehouseId },
+                    { label: text.supplier, value: inboundDetailRecord.supplierName },
+                    { label: text.referenceNo, value: inboundDetailRecord.referenceNo || '--' },
+                    { label: text.plannedDate, value: inboundDetailRecord.plannedDate },
+                    { label: text.createdBy, value: inboundDetailRecord.createdBy },
+                    { label: text.createdAt, value: ops.formatShortStamp(inboundDetailRecord.createdAt, getLocaleTag(locale)) },
+                    { label: text.approvalResult, value: getLocalizedStatus(locale, inboundDetailRecord.approvalStatus) },
+                    { label: text.approvalBy, value: inboundDetailRecord.approvedBy || '--' },
+                    { label: text.approvalAt, value: inboundDetailRecord.approvalUpdatedAt ? ops.formatShortStamp(inboundDetailRecord.approvalUpdatedAt, getLocaleTag(locale)) : '--' },
+                  ]
+                : [
+                    { label: text.warehouse, value: ops.findWarehouse(store, outboundDetailRecord?.warehouseId ?? '')?.warehouseName ?? outboundDetailRecord?.warehouseId ?? '--' },
+                    { label: text.destination, value: outboundDetailRecord?.destination ?? '--' },
+                    { label: text.carrier, value: outboundDetailRecord?.carrier || '--' },
+                    { label: text.shipmentDate, value: outboundDetailRecord?.shipmentDate ?? '--' },
+                    { label: text.createdBy, value: outboundDetailRecord?.createdBy ?? '--' },
+                    { label: text.createdAt, value: outboundDetailRecord ? ops.formatShortStamp(outboundDetailRecord.createdAt, getLocaleTag(locale)) : '--' },
+                    { label: text.approvalResult, value: outboundDetailRecord ? getLocalizedStatus(locale, outboundDetailRecord.approvalStatus) : '--' },
+                    { label: text.approvalBy, value: outboundDetailRecord?.approvedBy || '--' },
+                    { label: text.approvalAt, value: outboundDetailRecord?.approvalUpdatedAt ? ops.formatShortStamp(outboundDetailRecord.approvalUpdatedAt, getLocaleTag(locale)) : '--' },
+                  ]
+            }
           />
-        </section>
 
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">Quick jump</p>
-              <h2>Switch record</h2>
-            </div>
+          <LineItemsTable locale={locale} store={store} lineItems={detailRecord.lineItems} />
+
+          <div className="admin-note-block">
+            <strong>{text.orderNotes}</strong>
+            <p>{detailRecord.notes || text.noNotes}</p>
           </div>
 
-          <SearchSelectField
-            label="Selected record"
-            value={getSelectedRecordId(module, selections)}
-            options={options}
-            onChange={(value) => {
-              setRecordSelection(module, value, setSelections);
-            }}
-            placeholder={`Search ${page.entityLabel.toLowerCase()}`}
-          />
-        </section>
-
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">Queue notes</p>
-              <h2>Use for speed</h2>
+          {detailRecord.approvalReason ? (
+            <div className="admin-note-block admin-note-block--warning">
+              <strong>{text.rejectionReason}</strong>
+              <p>{detailRecord.approvalReason}</p>
             </div>
-          </div>
+          ) : null}
 
-          <ul className="mono-list">
-            {getListRailNotes(module).map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
+          {detailRecord.approvalStatus !== 'Approved' && canApprove ? (
+            <div className="approval-decision-panel">
+              <div className="approval-decision-panel__copy">
+                <strong>{text.approvalDecision}</strong>
+                <p>{text.approvalHint}</p>
+              </div>
+
+              <textarea
+                className="admin-textarea"
+                rows={3}
+                value={rejectReason}
+                placeholder={text.rejectPlaceholder}
+                onChange={(event) => setRejectReason(event.target.value)}
+              />
+
+              <div className="admin-toolbar__actions">
+                <button className="secondary-button" type="button" onClick={submitReject}>
+                  {text.reject}
+                </button>
+                <button className="primary-button" type="button" onClick={() => quickApprove(detailRecord.id)}>
+                  {text.approve}
+                </button>
+              </div>
+            </div>
+          ) : detailRecord.approvalStatus !== 'Approved' ? (
+            <div className="admin-inline-note">{text.approvalRestricted}</div>
+          ) : (
+            <div className="admin-inline-note">{text.postedNote}</div>
+          )}
         </section>
-      </RailFrame>
-    </section>
+      ) : null}
+    </>
   );
 }
 
-function OperationalDetailPage({
+function OrderFormWorkspace({
   module,
-  page,
-  store,
-  selections,
-  setSelections,
-  onNavigate,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  module: OperationalModuleKey;
-}) {
-  const detailSection = buildDetailSection(module, store, selections);
-  const options = ops.buildSelectionOptions(store, module);
-  const selectedOption = options.find((option) => option.value === getSelectedRecordId(module, selections));
-
-  if (isWarehouseFlowModule(module)) {
-    return (
-      <WarehouseFlowDetailPage
-        module={module}
-        page={page}
-        store={store}
-        selections={selections}
-        setSelections={setSelections}
-        onNavigate={onNavigate}
-        detailSection={detailSection}
-        options={options}
-      />
-    );
-  }
-
-  if (isMasterDataModule(module)) {
-    return (
-      <MasterDataDetailPage
-        module={module}
-        page={page}
-        store={store}
-        selections={selections}
-        setSelections={setSelections}
-        onNavigate={onNavigate}
-        detailSection={detailSection}
-        options={options}
-      />
-    );
-  }
-
-  return (
-    <section className="workspace-layout">
-      <section className="page-panel page-panel--main">
-        <div className="section-heading">
-          <div>
-            <p className="section-kicker">Detail page</p>
-            <h2>{page.title}</h2>
-          </div>
-          <p className="section-copy">The selected record stays synced with the list and edit form so the mock workflow feels continuous.</p>
-        </div>
-
-        <div className="detail-groups">
-          {detailSection.groups.map((group) => (
-            <section className="detail-group" key={group.title}>
-              <div className="detail-group__header">
-                <p className="section-kicker">{group.title}</p>
-                <h3>{group.title}</h3>
-              </div>
-
-              <dl className="detail-list">
-                {group.fields.map((field) => (
-                  <div className="detail-list__row" key={field.label}>
-                    <dt>{field.label}</dt>
-                    <dd>{field.value}</dd>
-                  </div>
-                ))}
-              </dl>
-            </section>
-          ))}
-        </div>
-
-        {detailSection.lineItems?.length ? (
-          <section className="detail-slab">
-            <div className="section-heading">
-              <div>
-                <p className="section-kicker">Item details</p>
-                <h2>Linked line items</h2>
-              </div>
-              <p className="section-copy">Product code and unit stay linked to the selected master data so operators can verify the order quickly.</p>
-            </div>
-
-            <div className="table-wrap">
-              <table className="orders-table">
-                <thead>
-                  <tr>
-                    <th>Product</th>
-                    <th>Product Code</th>
-                    <th>Qty</th>
-                    <th>Unit</th>
-                    <th>Notes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {detailSection.lineItems.map((lineItem) => (
-                    <tr key={lineItem.id}>
-                      <td>{lineItem.productName}</td>
-                      <td>{lineItem.productCode}</td>
-                      <td>{lineItem.quantity}</td>
-                      <td>{lineItem.unit}</td>
-                      <td>{lineItem.notes}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        ) : null}
-
-        {detailSection.notes ? (
-          <section className="detail-slab detail-slab--notes">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">Notes</p>
-                <h2>{detailSection.notesLabel ?? 'Notes'}</h2>
-              </div>
-            </div>
-            <p className="section-copy">{detailSection.notes}</p>
-          </section>
-        ) : null}
-      </section>
-
-      <RailFrame page={page} onNavigate={onNavigate}>
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">Selected record</p>
-              <h2>{selectedOption?.label ?? page.entityLabel}</h2>
-            </div>
-            <p className="section-copy">Switch the current record without leaving the detail workspace.</p>
-          </div>
-
-          <SearchSelectField
-            label="Current record"
-            value={getSelectedRecordId(module, selections)}
-            options={options}
-            onChange={(value) => {
-              setRecordSelection(module, value, setSelections);
-            }}
-            placeholder={`Search ${page.entityLabel.toLowerCase()}`}
-          />
-        </section>
-
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">Workflow notes</p>
-              <h2>Stay aligned</h2>
-            </div>
-          </div>
-
-          <ul className="mono-list">
-            {getDetailRailNotes(module).map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </section>
-      </RailFrame>
-    </section>
-  );
-}
-
-function isWarehouseFlowModule(module: OperationalModuleKey): module is WarehouseFlowModule {
-  return module === 'inbound' || module === 'outbound';
-}
-
-function getWarehouseFlowConfig(module: WarehouseFlowModule) {
-  if (module === 'inbound') {
-    return {
-      queueKicker: 'Receiving queue',
-      queueDescription: 'Start from the live receipt queue. Select one order to review, edit, or continue processing.',
-      detailKicker: 'Receipt workspace',
-      detailDescription: 'Review the selected receipt header, product lines, and confirmation state in one place.',
-      formKicker: 'Receipt setup',
-      formDescription: 'Complete the header first, then add product lines before final confirmation.',
-      primaryCreateLabel: 'New receipt',
-      reviewLabel: 'Review selected',
-      editLabel: 'Edit receipt',
-      backLabel: 'Back to queue',
-      selectedLabel: 'Selected receipt',
-      switchLabel: 'Receipt record',
-      partnerLabel: 'Supplier',
-      dateLabel: 'Planned date',
-      extraLabel: 'Reference no.',
-      emptyPartner: 'Pending supplier',
-      emptyWarehouse: 'Select warehouse',
-      formLead: 'Choose warehouse, supplier, and date before adding receipt lines.',
-      confirmLabel: 'Confirm Receipt',
-    };
-  }
-
-  return {
-    queueKicker: 'Dispatch queue',
-    queueDescription: 'Start from the live shipment queue. Select one order to review, edit, or continue processing.',
-    detailKicker: 'Shipment workspace',
-    detailDescription: 'Review the selected shipment header, product lines, and dispatch state in one place.',
-    formKicker: 'Shipment setup',
-    formDescription: 'Complete the header first, then add product lines before final confirmation.',
-    primaryCreateLabel: 'New shipment',
-    reviewLabel: 'Review selected',
-    editLabel: 'Edit shipment',
-    backLabel: 'Back to queue',
-    selectedLabel: 'Selected shipment',
-    switchLabel: 'Shipment record',
-    partnerLabel: 'Destination',
-    dateLabel: 'Ship date',
-    extraLabel: 'Carrier',
-    emptyPartner: 'Pending destination',
-    emptyWarehouse: 'Select warehouse',
-    formLead: 'Choose warehouse, destination, and ship date before adding shipment lines.',
-    confirmLabel: 'Confirm Shipment',
-  };
-}
-
-function getWarehouseFlowRecord(module: WarehouseFlowModule, store: WorkspaceStore, selections: OperationalSelections) {
-  return module === 'inbound' ? ops.getSelectedInbound(store, selections) : ops.getSelectedOutbound(store, selections);
-}
-
-function buildWarehouseFlowSnapshot(
-  module: WarehouseFlowModule,
-  store: WorkspaceStore,
-  record: WorkspaceStore['inboundOrders'][number] | WorkspaceStore['outboundOrders'][number],
-): WarehouseFlowSnapshot {
-  const config = getWarehouseFlowConfig(module);
-  const warehouse = ops.findWarehouse(store, record.warehouseId);
-  const warehouseCode = warehouse?.warehouseCode ?? record.warehouseId;
-  const warehouseName = warehouse?.warehouseName ?? record.warehouseId;
-
-  if (module === 'inbound') {
-    const inboundRecord = record as WorkspaceStore['inboundOrders'][number];
-
-    return {
-      title: inboundRecord.inboundNo,
-      status: inboundRecord.status,
-      detail: `${inboundRecord.supplierName || config.emptyPartner} · ${warehouseName}`,
-      metrics: [
-        { label: 'Warehouse', value: warehouseCode },
-        { label: config.partnerLabel, value: inboundRecord.supplierName || config.emptyPartner },
-        { label: 'Lines', value: String(ops.countLineItems(inboundRecord.lineItems)).padStart(2, '0') },
-        { label: 'Qty total', value: String(sumQuantities(inboundRecord.lineItems)) },
-      ],
-      facts: [
-        { label: config.dateLabel, value: inboundRecord.plannedDate || 'Pending' },
-        { label: config.extraLabel, value: inboundRecord.referenceNo || '--' },
-        { label: 'Created by', value: inboundRecord.createdBy },
-        { label: 'Confirmed', value: inboundRecord.confirmedAt ? ops.formatLongDate(inboundRecord.confirmedAt) : 'Pending' },
-      ],
-    };
-  }
-
-  const outboundRecord = record as WorkspaceStore['outboundOrders'][number];
-
-  return {
-    title: outboundRecord.outboundNo,
-    status: outboundRecord.status,
-    detail: `${outboundRecord.destination || config.emptyPartner} · ${warehouseName}`,
-    metrics: [
-      { label: 'Warehouse', value: warehouseCode },
-      { label: config.partnerLabel, value: outboundRecord.destination || config.emptyPartner },
-      { label: 'Lines', value: String(ops.countLineItems(outboundRecord.lineItems)).padStart(2, '0') },
-      { label: 'Qty total', value: String(sumQuantities(outboundRecord.lineItems)) },
-    ],
-    facts: [
-      { label: config.dateLabel, value: outboundRecord.shipmentDate || 'Pending' },
-      { label: config.extraLabel, value: outboundRecord.carrier || '--' },
-      { label: 'Created by', value: outboundRecord.createdBy },
-      { label: 'Confirmed', value: outboundRecord.confirmedAt ? ops.formatLongDate(outboundRecord.confirmedAt) : 'Pending' },
-    ],
-  };
-}
-
-function buildInboundFormSnapshot(formData: InboundFormData, store: WorkspaceStore): WarehouseFlowSnapshot {
-  const config = getWarehouseFlowConfig('inbound');
-  const warehouse = ops.findWarehouse(store, formData.warehouseId);
-
-  return {
-    title: formData.inboundNo || 'New receipt',
-    status: formData.status,
-    detail: `${formData.supplierName.trim() || config.emptyPartner} · ${warehouse?.warehouseName ?? config.emptyWarehouse}`,
-    metrics: [
-      { label: 'Warehouse', value: warehouse?.warehouseCode ?? '--' },
-      { label: config.partnerLabel, value: formData.supplierName.trim() || config.emptyPartner },
-      { label: 'Lines', value: String(ops.countLineItems(formData.lineItems)).padStart(2, '0') },
-      { label: 'Qty total', value: String(sumQuantities(formData.lineItems)) },
-    ],
-    facts: [
-      { label: config.dateLabel, value: formData.plannedDate || 'Pending' },
-      { label: config.extraLabel, value: formData.referenceNo.trim() || '--' },
-    ],
-  };
-}
-
-function buildOutboundFormSnapshot(formData: OutboundFormData, store: WorkspaceStore): WarehouseFlowSnapshot {
-  const config = getWarehouseFlowConfig('outbound');
-  const warehouse = ops.findWarehouse(store, formData.warehouseId);
-
-  return {
-    title: formData.outboundNo || 'New shipment',
-    status: formData.status,
-    detail: `${formData.destination.trim() || config.emptyPartner} · ${warehouse?.warehouseName ?? config.emptyWarehouse}`,
-    metrics: [
-      { label: 'Warehouse', value: warehouse?.warehouseCode ?? '--' },
-      { label: config.partnerLabel, value: formData.destination.trim() || config.emptyPartner },
-      { label: 'Lines', value: String(ops.countLineItems(formData.lineItems)).padStart(2, '0') },
-      { label: 'Qty total', value: String(sumQuantities(formData.lineItems)) },
-    ],
-    facts: [
-      { label: config.dateLabel, value: formData.shipmentDate || 'Pending' },
-      { label: config.extraLabel, value: formData.carrier.trim() || '--' },
-    ],
-  };
-}
-
-function hasReadyLineItem(lineItems: OrderLineItem[]) {
-  return lineItems.some((lineItem) => Boolean(lineItem.productId) && Number(lineItem.quantity) > 0);
-}
-
-function buildInboundFormSteps(formData: InboundFormData): WarehouseFlowStep[] {
-  const headerReady = Boolean(formData.warehouseId && formData.supplierName.trim() && formData.plannedDate.trim());
-  const linesReady = hasReadyLineItem(formData.lineItems);
-
-  return [
-    {
-      label: '1. Header',
-      detail: 'Warehouse, supplier, date',
-      state: headerReady ? 'done' : 'active',
-    },
-    {
-      label: '2. Lines',
-      detail: 'Add at least one receipt line',
-      state: headerReady ? (linesReady ? 'done' : 'active') : 'pending',
-    },
-    {
-      label: '3. Confirm',
-      detail: 'Finalize the receipt',
-      state: formData.status === 'Confirmed' ? 'done' : headerReady && linesReady ? 'active' : 'pending',
-    },
-  ];
-}
-
-function buildOutboundFormSteps(formData: OutboundFormData): WarehouseFlowStep[] {
-  const headerReady = Boolean(formData.warehouseId && formData.destination.trim() && formData.shipmentDate.trim());
-  const linesReady = hasReadyLineItem(formData.lineItems);
-
-  return [
-    {
-      label: '1. Header',
-      detail: 'Warehouse, destination, date',
-      state: headerReady ? 'done' : 'active',
-    },
-    {
-      label: '2. Lines',
-      detail: 'Add at least one shipment line',
-      state: headerReady ? (linesReady ? 'done' : 'active') : 'pending',
-    },
-    {
-      label: '3. Confirm',
-      detail: 'Release the shipment',
-      state: formData.status === 'Shipped' ? 'done' : headerReady && linesReady ? 'active' : 'pending',
-    },
-  ];
-}
-
-function WarehouseFlowHeader({
-  kicker,
-  title,
-  description,
-  actions,
-}: {
-  kicker: string;
-  title: string;
-  description: string;
-  actions?: ReactNode;
-}) {
-  return (
-    <section className="warehouse-flow-header">
-      <div className="warehouse-flow-header__copy">
-        <p className="section-kicker">{kicker}</p>
-        <h2>{title}</h2>
-        <p className="section-copy">{description}</p>
-      </div>
-
-      {actions ? <div className="warehouse-flow-header__actions">{actions}</div> : null}
-    </section>
-  );
-}
-
-function WarehouseFlowSpotlight({ kicker, snapshot }: { kicker: string; snapshot: WarehouseFlowSnapshot }) {
-  return (
-    <section className="warehouse-flow-spotlight">
-      <div className="warehouse-flow-spotlight__lead">
-        <div className="warehouse-flow-spotlight__eyebrow">
-          <p className="section-kicker">{kicker}</p>
-          <StatusPill value={snapshot.status} />
-        </div>
-        <h3>{snapshot.title}</h3>
-        <p className="section-copy">{snapshot.detail}</p>
-      </div>
-
-      <div className="warehouse-flow-metrics">
-        {snapshot.metrics.map((item) => (
-          <div className="warehouse-flow-metric" key={item.label}>
-            <span>{item.label}</span>
-            <strong>{item.value}</strong>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function WarehouseFlowFacts({ facts }: { facts: WarehouseFlowFact[] }) {
-  return (
-    <div className="warehouse-flow-facts">
-      {facts.map((item) => (
-        <div className="warehouse-flow-fact" key={item.label}>
-          <span>{item.label}</span>
-          <strong>{item.value}</strong>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function WarehouseFlowSteps({ items }: { items: WarehouseFlowStep[] }) {
-  return (
-    <section className="warehouse-flow-steps" aria-label="Workflow progress">
-      {items.map((item) => (
-        <div className={`warehouse-flow-step warehouse-flow-step--${item.state}`} key={item.label}>
-          <span>{item.label}</span>
-          <strong>{item.detail}</strong>
-        </div>
-      ))}
-    </section>
-  );
-}
-
-function WarehouseFlowListPage({
-  module,
-  page,
-  store,
-  selections,
-  setSelections,
-  onNavigate,
-  recordIds,
-  rows,
-  options,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  module: WarehouseFlowModule;
-  recordIds: string[];
-  rows: Record<string, string>[];
-  options: SearchOption[];
-}) {
-  const config = getWarehouseFlowConfig(module);
-  const selectedRecordId = getSelectedRecordId(module, selections);
-  const selectedRecord = getWarehouseFlowRecord(module, store, selections);
-  const spotlight = buildWarehouseFlowSnapshot(module, store, selectedRecord);
-
-  return (
-    <section className="workspace-layout workspace-layout--warehouse-flow">
-      <section className="page-panel page-panel--main page-panel--warehouse-main">
-        <WarehouseFlowHeader
-          kicker={config.queueKicker}
-          title={page.title}
-          description={config.queueDescription}
-          actions={
-            <>
-              <button className="primary-button" type="button" onClick={() => onNavigate(module === 'inbound' ? 'inbound-create' : 'outbound-create')}>
-                {config.primaryCreateLabel}
-              </button>
-              <button className="secondary-button" type="button" onClick={() => onNavigate(detailRouteByModule[module])}>
-                {config.reviewLabel}
-              </button>
-              <button className="ghost-link" type="button" onClick={() => onNavigate(editRouteByModule[module])}>
-                {config.editLabel}
-              </button>
-            </>
-          }
-        />
-
-        <WarehouseFlowSpotlight kicker={config.selectedLabel} snapshot={spotlight} />
-
-        <div className="table-wrap table-wrap--warehouse">
-          <table className="orders-table orders-table--warehouse">
-            <thead>
-              <tr>
-                {page.columns?.map((column) => (
-                  <th key={column.key}>{column.label}</th>
-                ))}
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, index) => {
-                const recordId = recordIds[index];
-                const isSelected = recordId === selectedRecordId;
-
-                return (
-                  <tr
-                    key={recordId}
-                    className={`orders-table__row ${isSelected ? 'is-selected' : ''}`}
-                    onClick={() => {
-                      setRecordSelection(module, recordId, setSelections);
-                    }}
-                  >
-                    {page.columns?.map((column) => (
-                      <td key={column.key}>{renderTableCell(column.key, row[column.key] ?? '--')}</td>
-                    ))}
-                    <td>
-                      <div className="table-actions">
-                        <button
-                          className="table-action-link table-action-link--accent"
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setRecordSelection(module, recordId, setSelections);
-                            onNavigate(detailRouteByModule[module]);
-                          }}
-                        >
-                          Review
-                        </button>
-                        <button
-                          className="table-action-link"
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setRecordSelection(module, recordId, setSelections);
-                            onNavigate(editRouteByModule[module]);
-                          }}
-                        >
-                          Continue
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">{config.selectedLabel}</p>
-              <h2>Switch order</h2>
-            </div>
-          </div>
-
-          <SearchSelectField
-            label={config.switchLabel}
-            value={selectedRecordId}
-            options={options}
-            onChange={(value) => {
-              setRecordSelection(module, value, setSelections);
-            }}
-            placeholder={`Search ${config.switchLabel.toLowerCase()}`}
-          />
-        </section>
-
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">Key facts</p>
-              <h2>{spotlight.title}</h2>
-            </div>
-            <p className="section-copy">Keep the active order in view while scanning the live queue.</p>
-          </div>
-
-          <WarehouseFlowFacts facts={spotlight.facts} />
-        </section>
-      </aside>
-    </section>
-  );
-}
-
-function WarehouseFlowDetailPage({
-  module,
-  page,
-  store,
-  selections,
-  setSelections,
-  onNavigate,
-  detailSection,
-  options,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  module: WarehouseFlowModule;
-  detailSection: ReturnType<typeof buildDetailSection>;
-  options: SearchOption[];
-}) {
-  const config = getWarehouseFlowConfig(module);
-  const selectedRecordId = getSelectedRecordId(module, selections);
-  const selectedRecord = getWarehouseFlowRecord(module, store, selections);
-  const spotlight = buildWarehouseFlowSnapshot(module, store, selectedRecord);
-
-  return (
-    <section className="workspace-layout workspace-layout--warehouse-flow">
-      <section className="page-panel page-panel--main page-panel--warehouse-main">
-        <WarehouseFlowHeader
-          kicker={config.detailKicker}
-          title={page.title}
-          description={config.detailDescription}
-          actions={
-            <>
-              <button className="primary-button" type="button" onClick={() => onNavigate(editRouteByModule[module])}>
-                {config.editLabel}
-              </button>
-              <button className="secondary-button" type="button" onClick={() => onNavigate(module === 'inbound' ? 'inbound-list' : 'outbound-list')}>
-                {config.backLabel}
-              </button>
-            </>
-          }
-        />
-
-        <WarehouseFlowSpotlight kicker={config.selectedLabel} snapshot={spotlight} />
-
-        <div className="detail-groups detail-groups--warehouse">
-          {detailSection.groups.map((group) => (
-            <section className="detail-group" key={group.title}>
-              <div className="detail-group__header">
-                <p className="section-kicker">{group.title}</p>
-                <h3>{group.title}</h3>
-              </div>
-
-              <dl className="detail-list">
-                {group.fields.map((field) => (
-                  <div className="detail-list__row" key={field.label}>
-                    <dt>{field.label}</dt>
-                    <dd>{field.value}</dd>
-                  </div>
-                ))}
-              </dl>
-            </section>
-          ))}
-        </div>
-
-        {detailSection.lineItems?.length ? (
-          <section className="detail-slab">
-            <div className="section-heading">
-              <div>
-                <p className="section-kicker">Line review</p>
-                <h2>Product lines</h2>
-              </div>
-              <p className="section-copy">Keep header and line quantities aligned before final confirmation.</p>
-            </div>
-
-            <div className="table-wrap">
-              <table className="orders-table">
-                <thead>
-                  <tr>
-                    <th>Product</th>
-                    <th>Product Code</th>
-                    <th>Qty</th>
-                    <th>Unit</th>
-                    <th>Notes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {detailSection.lineItems.map((lineItem) => (
-                    <tr key={lineItem.id}>
-                      <td>{lineItem.productName}</td>
-                      <td>{lineItem.productCode}</td>
-                      <td>{lineItem.quantity}</td>
-                      <td>{lineItem.unit}</td>
-                      <td>{lineItem.notes}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        ) : null}
-
-        {detailSection.notes ? (
-          <section className="detail-slab detail-slab--notes">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">Notes</p>
-                <h2>{detailSection.notesLabel ?? 'Notes'}</h2>
-              </div>
-            </div>
-            <p className="section-copy">{detailSection.notes}</p>
-          </section>
-        ) : null}
-      </section>
-
-      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">{config.selectedLabel}</p>
-              <h2>Switch order</h2>
-            </div>
-          </div>
-
-          <SearchSelectField
-            label={config.switchLabel}
-            value={selectedRecordId}
-            options={options}
-            onChange={(value) => {
-              setRecordSelection(module, value, setSelections);
-            }}
-            placeholder={`Search ${config.switchLabel.toLowerCase()}`}
-          />
-        </section>
-
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">Key facts</p>
-              <h2>{spotlight.title}</h2>
-            </div>
-          </div>
-
-          <WarehouseFlowFacts facts={spotlight.facts} />
-        </section>
-      </aside>
-    </section>
-  );
-}
-
-function isMasterDataModule(module: OperationalModuleKey): module is MasterDataModule {
-  return module === 'product' || module === 'category';
-}
-
-function getMasterDataConfig(module: MasterDataModule) {
-  if (module === 'product') {
-    return {
-      queueKicker: 'Product master',
-      queueDescription: 'Manage SKU records with category and warehouse ownership visible from one workspace.',
-      detailKicker: 'Product workspace',
-      detailDescription: 'Review the selected SKU, linked category, warehouse assignment, and current master-data status.',
-      formKicker: 'Product setup',
-      formDescription: 'Capture product identity first, then confirm category, warehouse, code, and unit before saving.',
-      primaryCreateLabel: 'New product',
-      reviewLabel: 'Review selected',
-      editLabel: 'Edit product',
-      backLabel: 'Back to list',
-      selectedLabel: 'Selected product',
-      switchLabel: 'Product record',
-      emptyTitle: 'New product',
-      formLead: 'Start with product name and category, then confirm warehouse and unit.',
-      saveLabel: 'Save Product',
-      updateLabel: 'Update Product',
-    };
-  }
-
-  return {
-    queueKicker: 'Category structure',
-    queueDescription: 'Maintain category naming, status, and linked product coverage from one workspace.',
-    detailKicker: 'Category workspace',
-    detailDescription: 'Review the selected category, status, description, and linked product coverage.',
-    formKicker: 'Category setup',
-    formDescription: 'Set the category name first, then complete code, description, and status before saving.',
-    primaryCreateLabel: 'New category',
-    reviewLabel: 'Review selected',
-    editLabel: 'Edit category',
-    backLabel: 'Back to list',
-    selectedLabel: 'Selected category',
-    switchLabel: 'Category record',
-    emptyTitle: 'New category',
-    formLead: 'Start with the category name, then finalize code and status.',
-    saveLabel: 'Save Category',
-    updateLabel: 'Update Category',
-  };
-}
-
-function getMasterDataRecord(module: MasterDataModule, store: WorkspaceStore, selections: OperationalSelections) {
-  return module === 'product' ? ops.getSelectedProduct(store, selections) : ops.getSelectedCategory(store, selections);
-}
-
-function buildMasterDataSnapshot(
-  module: MasterDataModule,
-  store: WorkspaceStore,
-  record: WorkspaceStore['products'][number] | WorkspaceStore['categories'][number],
-): WarehouseFlowSnapshot {
-  if (module === 'product') {
-    const product = record as WorkspaceStore['products'][number];
-    const category = ops.findCategory(store, product.categoryId);
-    const warehouse = ops.findWarehouse(store, product.warehouseId);
-
-    return {
-      title: product.productName,
-      status: product.status,
-      detail: `${product.productCode} · ${category?.categoryName ?? 'Unassigned'} · ${warehouse?.warehouseName ?? 'Unassigned'}`,
-      metrics: [
-        { label: 'Code', value: product.productCode },
-        { label: 'Category', value: category?.categoryName ?? 'Unassigned' },
-        { label: 'Warehouse', value: warehouse?.warehouseCode ?? 'Unassigned' },
-        { label: 'Unit', value: product.unit },
-      ],
-      facts: [
-        { label: 'Created', value: ops.formatLongDate(product.createdAt) },
-        { label: 'Updated', value: ops.formatLongDate(product.updatedAt) },
-      ],
-    };
-  }
-
-  const category = record as WorkspaceStore['categories'][number];
-  const linkedProducts = store.products.filter((product) => product.categoryId === category.id).length;
-
-  return {
-    title: category.categoryName,
-    status: category.status,
-    detail: `${category.categoryCode} · ${linkedProducts} linked products`,
-    metrics: [
-      { label: 'Code', value: category.categoryCode },
-      { label: 'Linked', value: String(linkedProducts) },
-      { label: 'Updated by', value: category.updatedBy },
-      { label: 'Status', value: category.status },
-    ],
-    facts: [
-      { label: 'Updated', value: ops.formatLongDate(category.updatedAt) },
-      { label: 'Description', value: category.description || '--' },
-    ],
-  };
-}
-
-function buildProductFormSnapshot(formData: ProductFormData, store: WorkspaceStore): WarehouseFlowSnapshot {
-  const config = getMasterDataConfig('product');
-  const category = ops.findCategory(store, formData.categoryId);
-  const warehouse = ops.findWarehouse(store, formData.warehouseId);
-
-  return {
-    title: formData.productName.trim() || config.emptyTitle,
-    status: formData.status,
-    detail: `${formData.productCode || 'Auto code'} · ${category?.categoryName ?? 'Select category'} · ${warehouse?.warehouseName ?? 'Select warehouse'}`,
-    metrics: [
-      { label: 'Code', value: formData.productCode || 'Auto' },
-      { label: 'Category', value: category?.categoryName ?? 'Pending' },
-      { label: 'Warehouse', value: warehouse?.warehouseCode ?? 'Pending' },
-      { label: 'Unit', value: formData.unit || 'Auto' },
-    ],
-    facts: [],
-  };
-}
-
-function buildCategoryFormSnapshot(
-  formData: CategoryFormData,
-  linkedProductCount: number,
-): WarehouseFlowSnapshot {
-  const config = getMasterDataConfig('category');
-
-  return {
-    title: formData.categoryName.trim() || config.emptyTitle,
-    status: formData.status,
-    detail: `${formData.categoryCode || 'Auto code'} · ${linkedProductCount} linked products`,
-    metrics: [
-      { label: 'Code', value: formData.categoryCode || 'Auto' },
-      { label: 'Linked', value: String(linkedProductCount) },
-      { label: 'Description', value: formData.description.trim() ? 'Ready' : 'Optional' },
-      { label: 'Notes', value: formData.notes.trim() ? 'Ready' : 'Optional' },
-    ],
-    facts: formData.description.trim() ? [{ label: 'Description', value: formData.description.trim() }] : [],
-  };
-}
-
-function buildProductFormSteps(formData: ProductFormData): WarehouseFlowStep[] {
-  const basicsReady = Boolean(formData.productName.trim() && formData.categoryId);
-  const contextReady = Boolean(formData.warehouseId && formData.productCode.trim() && formData.unit.trim());
-
-  return [
-    {
-      label: '1. Basics',
-      detail: 'Name and category',
-      state: basicsReady ? 'done' : 'active',
-    },
-    {
-      label: '2. Context',
-      detail: 'Warehouse, code, unit',
-      state: basicsReady ? (contextReady ? 'done' : 'active') : 'pending',
-    },
-    {
-      label: '3. Save',
-      detail: 'Publish or keep draft',
-      state: formData.status === 'Active' ? 'done' : basicsReady && contextReady ? 'active' : 'pending',
-    },
-  ];
-}
-
-function buildCategoryFormSteps(formData: CategoryFormData): WarehouseFlowStep[] {
-  const basicsReady = Boolean(formData.categoryName.trim());
-  const contextReady = Boolean(formData.categoryCode.trim());
-
-  return [
-    {
-      label: '1. Basics',
-      detail: 'Name first',
-      state: basicsReady ? 'done' : 'active',
-    },
-    {
-      label: '2. Context',
-      detail: 'Code and status',
-      state: basicsReady ? (contextReady ? 'done' : 'active') : 'pending',
-    },
-    {
-      label: '3. Save',
-      detail: 'Publish or keep draft',
-      state: formData.status === 'Active' ? 'done' : basicsReady && contextReady ? 'active' : 'pending',
-    },
-  ];
-}
-
-function MasterDataListPage({
-  module,
-  page,
-  store,
-  selections,
-  setSelections,
-  onNavigate,
-  recordIds,
-  rows,
-  options,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  module: MasterDataModule;
-  recordIds: string[];
-  rows: Record<string, string>[];
-  options: SearchOption[];
-}) {
-  const config = getMasterDataConfig(module);
-  const selectedRecordId = getSelectedRecordId(module, selections);
-  const selectedRecord = getMasterDataRecord(module, store, selections);
-  const spotlight = buildMasterDataSnapshot(module, store, selectedRecord);
-
-  return (
-    <section className="workspace-layout workspace-layout--warehouse-flow">
-      <section className="page-panel page-panel--main page-panel--warehouse-main">
-        <WarehouseFlowHeader
-          kicker={config.queueKicker}
-          title={page.title}
-          description={config.queueDescription}
-          actions={
-            <>
-              <button className="primary-button" type="button" onClick={() => onNavigate(module === 'product' ? 'product-create' : 'category-create')}>
-                {config.primaryCreateLabel}
-              </button>
-              <button className="secondary-button" type="button" onClick={() => onNavigate(detailRouteByModule[module])}>
-                {config.reviewLabel}
-              </button>
-              <button className="ghost-link" type="button" onClick={() => onNavigate(editRouteByModule[module])}>
-                {config.editLabel}
-              </button>
-            </>
-          }
-        />
-
-        <WarehouseFlowSpotlight kicker={config.selectedLabel} snapshot={spotlight} />
-
-        <div className="table-wrap table-wrap--warehouse">
-          <table className="orders-table">
-            <thead>
-              <tr>
-                {page.columns?.map((column) => (
-                  <th key={column.key}>{column.label}</th>
-                ))}
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, index) => {
-                const recordId = recordIds[index];
-                const isSelected = recordId === selectedRecordId;
-
-                return (
-                  <tr
-                    key={recordId}
-                    className={`orders-table__row ${isSelected ? 'is-selected' : ''}`}
-                    onClick={() => {
-                      setRecordSelection(module, recordId, setSelections);
-                    }}
-                  >
-                    {page.columns?.map((column) => (
-                      <td key={column.key}>{renderTableCell(column.key, row[column.key] ?? '--')}</td>
-                    ))}
-                    <td>
-                      <div className="table-actions">
-                        <button
-                          className="table-action-link table-action-link--accent"
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setRecordSelection(module, recordId, setSelections);
-                            onNavigate(detailRouteByModule[module]);
-                          }}
-                        >
-                          Review
-                        </button>
-                        <button
-                          className="table-action-link"
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setRecordSelection(module, recordId, setSelections);
-                            onNavigate(editRouteByModule[module]);
-                          }}
-                        >
-                          Edit
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">{config.selectedLabel}</p>
-              <h2>Switch record</h2>
-            </div>
-          </div>
-
-          <SearchSelectField
-            label={config.switchLabel}
-            value={selectedRecordId}
-            options={options}
-            onChange={(value) => {
-              setRecordSelection(module, value, setSelections);
-            }}
-            placeholder={`Search ${config.switchLabel.toLowerCase()}`}
-          />
-        </section>
-
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">Key facts</p>
-              <h2>{spotlight.title}</h2>
-            </div>
-            <p className="section-copy">Keep the active master record in view while scanning the list.</p>
-          </div>
-
-          <WarehouseFlowFacts facts={spotlight.facts} />
-        </section>
-      </aside>
-    </section>
-  );
-}
-
-function MasterDataDetailPage({
-  module,
-  page,
-  store,
-  selections,
-  setSelections,
-  onNavigate,
-  detailSection,
-  options,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  module: MasterDataModule;
-  detailSection: ReturnType<typeof buildDetailSection>;
-  options: SearchOption[];
-}) {
-  const config = getMasterDataConfig(module);
-  const selectedRecordId = getSelectedRecordId(module, selections);
-  const selectedRecord = getMasterDataRecord(module, store, selections);
-  const spotlight = buildMasterDataSnapshot(module, store, selectedRecord);
-
-  return (
-    <section className="workspace-layout workspace-layout--warehouse-flow">
-      <section className="page-panel page-panel--main page-panel--warehouse-main">
-        <WarehouseFlowHeader
-          kicker={config.detailKicker}
-          title={page.title}
-          description={config.detailDescription}
-          actions={
-            <>
-              <button className="primary-button" type="button" onClick={() => onNavigate(editRouteByModule[module])}>
-                {config.editLabel}
-              </button>
-              <button className="secondary-button" type="button" onClick={() => onNavigate(module === 'product' ? 'product-list' : 'category-list')}>
-                {config.backLabel}
-              </button>
-            </>
-          }
-        />
-
-        <WarehouseFlowSpotlight kicker={config.selectedLabel} snapshot={spotlight} />
-
-        <div className="detail-groups">
-          {detailSection.groups.map((group) => (
-            <section className="detail-group" key={group.title}>
-              <div className="detail-group__header">
-                <p className="section-kicker">{group.title}</p>
-                <h3>{group.title}</h3>
-              </div>
-
-              <dl className="detail-list">
-                {group.fields.map((field) => (
-                  <div className="detail-list__row" key={field.label}>
-                    <dt>{field.label}</dt>
-                    <dd>{field.value}</dd>
-                  </div>
-                ))}
-              </dl>
-            </section>
-          ))}
-        </div>
-
-        {detailSection.notes ? (
-          <section className="detail-slab detail-slab--notes">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">Notes</p>
-                <h2>{detailSection.notesLabel ?? 'Notes'}</h2>
-              </div>
-            </div>
-            <p className="section-copy">{detailSection.notes}</p>
-          </section>
-        ) : null}
-      </section>
-
-      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">{config.selectedLabel}</p>
-              <h2>Switch record</h2>
-            </div>
-          </div>
-
-          <SearchSelectField
-            label={config.switchLabel}
-            value={selectedRecordId}
-            options={options}
-            onChange={(value) => {
-              setRecordSelection(module, value, setSelections);
-            }}
-            placeholder={`Search ${config.switchLabel.toLowerCase()}`}
-          />
-        </section>
-
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">Key facts</p>
-              <h2>{spotlight.title}</h2>
-            </div>
-          </div>
-
-          <WarehouseFlowFacts facts={spotlight.facts} />
-        </section>
-      </aside>
-    </section>
-  );
-}
-
-function ProductFormPage({
-  mode,
-  page,
   store,
   setStore,
   selections,
   setSelections,
   onNavigate,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'setStore' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  mode: 'create' | 'edit';
-}) {
-  const sourceRecord = mode === 'edit' ? ops.getSelectedProduct(store, selections) : undefined;
-
-  return (
-    <ProductFormEditor
-      key={`${mode}:${sourceRecord?.id ?? 'create'}`}
-      mode={mode}
-      page={page}
-      store={store}
-      setStore={setStore}
-      sourceRecord={sourceRecord}
-      selections={selections}
-      setSelections={setSelections}
-      onNavigate={onNavigate}
-    />
-  );
-}
-
-function ProductFormEditor({
-  mode,
-  page,
-  store,
-  setStore,
-  sourceRecord,
-  selections,
-  setSelections,
-  onNavigate,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'setStore' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  mode: 'create' | 'edit';
-  sourceRecord?: WorkspaceStore['products'][number];
-}) {
-  const [formData, setFormData] = useState<ProductFormData>(() =>
-    sourceRecord ? ops.mapProductToFormData(sourceRecord) : ops.createProductDraft(),
-  );
-  const [touched, setTouched] = useState<TouchedMap>({});
-  const [submitCount, setSubmitCount] = useState(0);
-  const [codeLocked, setCodeLocked] = useState(Boolean(sourceRecord?.productCode));
-  const [unitLocked, setUnitLocked] = useState(Boolean(sourceRecord?.unit));
-  const categoryOptions = ops.buildCategoryOptions(store);
-  const warehouseOptions = ops.buildWarehouseOptions(store);
-
-  const errors = validateProductForm(formData);
-
-  function updateField<Key extends keyof ProductFormData>(key: Key, value: ProductFormData[Key]) {
-    setFormData((current) => {
-      const next = {
-        ...current,
-        [key]: value,
-      };
-
-      if ((key === 'productName' || key === 'categoryId') && !codeLocked) {
-        next.productCode =
-          next.productName.trim() && next.categoryId ? ops.suggestProductCode(next.productName, next.categoryId, store) : '';
+  route,
+  locale,
+  currentUser,
+}: OperationalModuleViewProps & { module: OrderModule }) {
+  const sourceRecord =
+    module === 'inbound'
+      ? route === 'inbound-edit'
+        ? ops.getSelectedInbound(store, selections)
+        : undefined
+      : route === 'outbound-edit'
+        ? ops.getSelectedOutbound(store, selections)
+        : undefined;
+  const [feedback, setFeedback] = useState<ImportFeedback | null>(null);
+  const [formData, setFormData] = useState<ops.InboundFormData | ops.OutboundFormData>(() => {
+    if (module === 'inbound') {
+      if (sourceRecord && 'supplierName' in sourceRecord) {
+        return ops.mapInboundToFormData(sourceRecord);
       }
 
-      if (key === 'categoryId' && !unitLocked) {
-        next.unit = next.categoryId ? ops.suggestUnit(next.categoryId, store) : '';
-      }
-
-      return next;
-    });
-  }
-
-  function saveProduct(isDraftAction: boolean) {
-    setSubmitCount((count) => count + 1);
-
-    if (Object.keys(errors).length > 0) {
-      return;
+      const draft = ops.createInboundDraft();
+      draft.inboundNo = ops.createInboundNumber(store);
+      return draft;
     }
 
-    const nextTimestamp = ops.nowIso();
-    const nextStatus = isDraftAction ? formData.status : formData.status === 'Draft' ? 'Active' : formData.status;
-    const nextRecordId = sourceRecord?.id ?? `${ops.sanitizeCode(formData.productCode) || 'PRODUCT'}-${store.products.length + 1}`;
-
-    const nextRecord = {
-      id: nextRecordId,
-      productCode: formData.productCode,
-      productName: formData.productName.trim(),
-      categoryId: formData.categoryId,
-      warehouseId: formData.warehouseId,
-      unit: formData.unit.trim(),
-      status: nextStatus,
-      notes: formData.notes.trim(),
-      createdAt: sourceRecord?.createdAt ?? nextTimestamp,
-      updatedAt: nextTimestamp,
-    } satisfies WorkspaceStore['products'][number];
-
-    setStore((current) => ({
-      ...current,
-      products: sourceRecord
-        ? current.products.map((product) => (product.id === sourceRecord.id ? nextRecord : product))
-        : [nextRecord, ...current.products],
-    }));
-
-    setSelections((current) => ({
-      ...current,
-      productId: nextRecord.id,
-    }));
-
-    if (mode === 'create') {
-      onNavigate('product-edit');
-    }
-  }
-
-  const flowConfig = getMasterDataConfig('product');
-  const flowSteps = buildProductFormSteps(formData);
-  const previewSnapshot = buildProductFormSnapshot(formData, store);
-  const readyToSave = flowSteps[0].state === 'done' && flowSteps[1].state === 'done';
-
-  return (
-    <section className="workspace-layout workspace-layout--warehouse-flow">
-      <section className="page-panel page-panel--main page-panel--warehouse-main">
-        <WarehouseFlowHeader
-          kicker={flowConfig.formKicker}
-          title={page.title}
-          description={flowConfig.formDescription}
-          actions={
-            <>
-              <button className="secondary-button" type="button" onClick={() => onNavigate('product-list')}>
-                {flowConfig.backLabel}
-              </button>
-              {mode === 'edit' ? (
-                <button className="ghost-link" type="button" onClick={() => onNavigate(detailRouteByModule.product)}>
-                  Review product
-                </button>
-              ) : null}
-            </>
-          }
-        />
-
-        <WarehouseFlowSteps items={flowSteps} />
-
-        <form
-          className="workflow-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-          }}
-        >
-          <FormSection title="Identity" description="Start with product name and category.">
-            <div className="form-section__grid form-section__grid--two">
-              <TextField
-                label="Product name"
-                value={formData.productName}
-                onChange={(value) => updateField('productName', value)}
-                onBlur={() => setTouchedFlag('productName', setTouched)}
-                placeholder="Enter the product name"
-                required
-                error={getVisibleError('productName', errors, touched, submitCount)}
-              />
-              <SearchSelectField
-                label="Category"
-                value={formData.categoryId}
-                options={categoryOptions}
-                onChange={(value) => {
-                  updateField('categoryId', value);
-                }}
-                onBlur={() => setTouchedFlag('categoryId', setTouched)}
-                placeholder="Search category"
-                required
-                error={getVisibleError('categoryId', errors, touched, submitCount)}
-              />
-            </div>
-          </FormSection>
-
-          <FormSection title="Operational Context" description="Confirm warehouse, code, unit, and status before saving.">
-            <div className="form-section__grid form-section__grid--two">
-              <SearchSelectField
-                label="Warehouse"
-                value={formData.warehouseId}
-                options={warehouseOptions}
-                onChange={(value) => {
-                  updateField('warehouseId', value);
-                }}
-                onBlur={() => setTouchedFlag('warehouseId', setTouched)}
-                placeholder="Search warehouse"
-                required
-                error={getVisibleError('warehouseId', errors, touched, submitCount)}
-              />
-              <SelectField
-                label="Status"
-                value={formData.status}
-                options={ops.productStatusOptions}
-                onChange={(value) => updateField('status', value as ProductFormData['status'])}
-              />
-            </div>
-
-            <div className="form-section__grid form-section__grid--two">
-              <TextField
-                label="Product code"
-                value={formData.productCode}
-                onChange={(value) => {
-                  setCodeLocked(true);
-                  updateField('productCode', ops.sanitizeCode(value));
-                }}
-                onBlur={() => setTouchedFlag('productCode', setTouched)}
-                placeholder="Generated from category and product name"
-                required
-                error={getVisibleError('productCode', errors, touched, submitCount)}
-              />
-              <TextField
-                label="Unit"
-                value={formData.unit}
-                onChange={(value) => {
-                  setUnitLocked(true);
-                  updateField('unit', value);
-                }}
-                onBlur={() => setTouchedFlag('unit', setTouched)}
-                placeholder="Pack, Unit, Set"
-                required
-                error={getVisibleError('unit', errors, touched, submitCount)}
-              />
-            </div>
-          </FormSection>
-
-          <FormSection title="Notes">
-            <TextAreaField
-              label="Product notes"
-              value={formData.notes}
-              onChange={(value) => updateField('notes', value)}
-              placeholder="Add receiving, picking, or exception notes"
-            />
-          </FormSection>
-
-          <section className="form-section form-section--actions">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">Finish</p>
-                <h2>Save the record</h2>
-              </div>
-              <p className="section-copy">
-                {readyToSave
-                  ? 'Save as draft while the master data is still forming, or publish the current product record.'
-                  : flowConfig.formLead}
-              </p>
-            </div>
-
-            <div className="button-row">
-              <button className="secondary-button" type="button" onClick={() => saveProduct(true)}>
-                Save Draft
-              </button>
-              <button className="primary-button" type="button" onClick={() => saveProduct(false)}>
-                {mode === 'create' ? flowConfig.saveLabel : flowConfig.updateLabel}
-              </button>
-              <button className="ghost-link" type="button" onClick={() => onNavigate('product-list')}>
-                {flowConfig.backLabel}
-              </button>
-            </div>
-          </section>
-        </form>
-      </section>
-
-      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
-        {mode === 'edit' ? (
-          <section className="rail-block">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">{flowConfig.selectedLabel}</p>
-                <h2>Switch record</h2>
-              </div>
-            </div>
-
-            <SearchSelectField
-              label={flowConfig.switchLabel}
-              value={selections.productId}
-              options={ops.buildSelectionOptions(store, 'product')}
-              onChange={(value) => setSelections((current) => ({ ...current, productId: value }))}
-              placeholder="Search product record"
-            />
-          </section>
-        ) : (
-          <section className="rail-block">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">Start here</p>
-                <h2>{flowConfig.primaryCreateLabel}</h2>
-              </div>
-              <p className="section-copy">{flowConfig.formLead}</p>
-            </div>
-          </section>
-        )}
-
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">Preview</p>
-              <h2>{previewSnapshot.title}</h2>
-            </div>
-          </div>
-
-          <div className="preview-grid">
-            <PreviewStat label="Status" value={formData.status} tone={ops.getStatusTone(formData.status)} />
-            {previewSnapshot.metrics.map((metric) => (
-              <PreviewStat key={metric.label} label={metric.label} value={metric.value} />
-            ))}
-          </div>
-
-          {previewSnapshot.facts.length ? <WarehouseFlowFacts facts={previewSnapshot.facts} /> : null}
-        </section>
-      </aside>
-    </section>
-  );
-}
-
-function CategoryFormPage({
-  mode,
-  page,
-  store,
-  setStore,
-  selections,
-  setSelections,
-  onNavigate,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'setStore' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  mode: 'create' | 'edit';
-}) {
-  const sourceRecord = mode === 'edit' ? ops.getSelectedCategory(store, selections) : undefined;
-
-  return (
-    <CategoryFormEditor
-      key={`${mode}:${sourceRecord?.id ?? 'create'}`}
-      mode={mode}
-      page={page}
-      store={store}
-      setStore={setStore}
-      sourceRecord={sourceRecord}
-      selections={selections}
-      setSelections={setSelections}
-      onNavigate={onNavigate}
-    />
-  );
-}
-
-function CategoryFormEditor({
-  mode,
-  page,
-  store,
-  setStore,
-  sourceRecord,
-  selections,
-  setSelections,
-  onNavigate,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'setStore' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  mode: 'create' | 'edit';
-  sourceRecord?: WorkspaceStore['categories'][number];
-}) {
-  const [formData, setFormData] = useState<CategoryFormData>(() =>
-    sourceRecord ? ops.mapCategoryToFormData(sourceRecord) : ops.createCategoryDraft(),
-  );
-  const [touched, setTouched] = useState<TouchedMap>({});
-  const [submitCount, setSubmitCount] = useState(0);
-  const [codeLocked, setCodeLocked] = useState(Boolean(sourceRecord?.categoryCode));
-  const linkedProductCount = sourceRecord ? store.products.filter((product) => product.categoryId === sourceRecord.id).length : 0;
-
-  const errors = validateCategoryForm(formData);
-
-  function updateField<Key extends keyof CategoryFormData>(key: Key, value: CategoryFormData[Key]) {
-    setFormData((current) => {
-      const next = {
-        ...current,
-        [key]: value,
-      };
-
-      if (key === 'categoryName' && !codeLocked) {
-        next.categoryCode = next.categoryName.trim() ? ops.suggestCategoryCode(next.categoryName, store) : '';
-      }
-
-      return next;
-    });
-  }
-
-  function saveCategory(isDraftAction: boolean) {
-    setSubmitCount((count) => count + 1);
-
-    if (Object.keys(errors).length > 0) {
-      return;
-    }
-
-    const nextTimestamp = ops.nowIso();
-    const nextStatus = isDraftAction ? formData.status : formData.status === 'Draft' ? 'Active' : formData.status;
-    const nextRecordId = sourceRecord?.id ?? `${ops.sanitizeCode(formData.categoryCode) || 'CATEGORY'}-${store.categories.length + 1}`;
-
-    const nextRecord = {
-      id: nextRecordId,
-      categoryCode: formData.categoryCode,
-      categoryName: formData.categoryName.trim(),
-      description: formData.description.trim(),
-      status: nextStatus,
-      notes: formData.notes.trim(),
-      updatedAt: nextTimestamp,
-      updatedBy: ops.currentOperator,
-    } satisfies WorkspaceStore['categories'][number];
-
-    setStore((current) => ({
-      ...current,
-      categories: sourceRecord
-        ? current.categories.map((category) => (category.id === sourceRecord.id ? nextRecord : category))
-        : [nextRecord, ...current.categories],
-    }));
-
-    setSelections((current) => ({
-      ...current,
-      categoryId: nextRecord.id,
-    }));
-
-    if (mode === 'create') {
-      onNavigate('category-edit');
-    }
-  }
-
-  const flowConfig = getMasterDataConfig('category');
-  const flowSteps = buildCategoryFormSteps(formData);
-  const previewSnapshot = buildCategoryFormSnapshot(formData, linkedProductCount);
-  const readyToSave = flowSteps[0].state === 'done' && flowSteps[1].state === 'done';
-
-  return (
-    <section className="workspace-layout workspace-layout--warehouse-flow">
-      <section className="page-panel page-panel--main page-panel--warehouse-main">
-        <WarehouseFlowHeader
-          kicker={flowConfig.formKicker}
-          title={page.title}
-          description={flowConfig.formDescription}
-          actions={
-            <>
-              <button className="secondary-button" type="button" onClick={() => onNavigate('category-list')}>
-                {flowConfig.backLabel}
-              </button>
-              {mode === 'edit' ? (
-                <button className="ghost-link" type="button" onClick={() => onNavigate(detailRouteByModule.category)}>
-                  Review category
-                </button>
-              ) : null}
-            </>
-          }
-        />
-
-        <WarehouseFlowSteps items={flowSteps} />
-
-        <form
-          className="workflow-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-          }}
-        >
-          <FormSection title="Identity" description="Start with the category name.">
-            <div className="form-section__grid form-section__grid--two">
-              <TextField
-                label="Category name"
-                value={formData.categoryName}
-                onChange={(value) => updateField('categoryName', value)}
-                onBlur={() => setTouchedFlag('categoryName', setTouched)}
-                placeholder="Enter the category name"
-                required
-                error={getVisibleError('categoryName', errors, touched, submitCount)}
-              />
-              <TextField
-                label="Category code"
-                value={formData.categoryCode}
-                onChange={(value) => {
-                  setCodeLocked(true);
-                  updateField('categoryCode', ops.sanitizeCode(value));
-                }}
-                onBlur={() => setTouchedFlag('categoryCode', setTouched)}
-                placeholder="Generated from the category name"
-                required
-                error={getVisibleError('categoryCode', errors, touched, submitCount)}
-              />
-            </div>
-          </FormSection>
-
-          <FormSection title="Operational Context" description="Confirm description and status before saving.">
-            <div className="form-section__grid form-section__grid--two">
-              <TextAreaField
-                label="Description"
-                value={formData.description}
-                onChange={(value) => updateField('description', value)}
-                placeholder="Short explanation of what belongs in this category"
-              />
-              <SelectField
-                label="Status"
-                value={formData.status}
-                options={ops.categoryStatusOptions}
-                onChange={(value) => updateField('status', value as CategoryFormData['status'])}
-              />
-            </div>
-          </FormSection>
-
-          <FormSection title="Notes">
-            <TextAreaField
-              label="Category notes"
-              value={formData.notes}
-              onChange={(value) => updateField('notes', value)}
-              placeholder="Add assignment rules, cleanup notes, or status context"
-            />
-          </FormSection>
-
-          <section className="form-section form-section--actions">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">Finish</p>
-                <h2>Save the record</h2>
-              </div>
-              <p className="section-copy">
-                {readyToSave
-                  ? 'Save as draft while the structure is still under review, or publish the current category record.'
-                  : flowConfig.formLead}
-              </p>
-            </div>
-
-            <div className="button-row">
-              <button className="secondary-button" type="button" onClick={() => saveCategory(true)}>
-                Save Draft
-              </button>
-              <button className="primary-button" type="button" onClick={() => saveCategory(false)}>
-                {mode === 'create' ? flowConfig.saveLabel : flowConfig.updateLabel}
-              </button>
-              <button className="ghost-link" type="button" onClick={() => onNavigate('category-list')}>
-                {flowConfig.backLabel}
-              </button>
-            </div>
-          </section>
-        </form>
-      </section>
-
-      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
-        {mode === 'edit' ? (
-          <section className="rail-block">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">{flowConfig.selectedLabel}</p>
-                <h2>Switch record</h2>
-              </div>
-            </div>
-
-            <SearchSelectField
-              label={flowConfig.switchLabel}
-              value={selections.categoryId}
-              options={ops.buildSelectionOptions(store, 'category')}
-              onChange={(value) => setSelections((current) => ({ ...current, categoryId: value }))}
-              placeholder="Search category record"
-            />
-          </section>
-        ) : (
-          <section className="rail-block">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">Start here</p>
-                <h2>{flowConfig.primaryCreateLabel}</h2>
-              </div>
-              <p className="section-copy">{flowConfig.formLead}</p>
-            </div>
-          </section>
-        )}
-
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">Preview</p>
-              <h2>{previewSnapshot.title}</h2>
-            </div>
-          </div>
-
-          <div className="preview-grid">
-            <PreviewStat label="Status" value={formData.status} tone={ops.getStatusTone(formData.status)} />
-            {previewSnapshot.metrics.map((metric) => (
-              <PreviewStat key={metric.label} label={metric.label} value={metric.value} />
-            ))}
-          </div>
-
-          {previewSnapshot.facts.length ? <WarehouseFlowFacts facts={previewSnapshot.facts} /> : null}
-        </section>
-      </aside>
-    </section>
-  );
-}
-
-function InboundFormPage({
-  mode,
-  page,
-  store,
-  setStore,
-  selections,
-  setSelections,
-  onNavigate,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'setStore' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  mode: 'create' | 'edit';
-}) {
-  const sourceRecord = mode === 'edit' ? ops.getSelectedInbound(store, selections) : undefined;
-
-  return (
-    <InboundFormEditor
-      key={`${mode}:${sourceRecord?.id ?? 'create'}`}
-      mode={mode}
-      page={page}
-      store={store}
-      setStore={setStore}
-      sourceRecord={sourceRecord}
-      selections={selections}
-      setSelections={setSelections}
-      onNavigate={onNavigate}
-    />
-  );
-}
-
-function InboundFormEditor({
-  mode,
-  page,
-  store,
-  setStore,
-  sourceRecord,
-  selections,
-  setSelections,
-  onNavigate,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'setStore' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  mode: 'create' | 'edit';
-  sourceRecord?: WorkspaceStore['inboundOrders'][number];
-}) {
-  const [formData, setFormData] = useState<InboundFormData>(() => {
-    if (sourceRecord) {
-      return ops.mapInboundToFormData(sourceRecord);
-    }
-
-    const nextDraft = ops.createInboundDraft();
-    nextDraft.inboundNo = ops.createInboundNumber(store);
-    return nextDraft;
-  });
-  const [touched, setTouched] = useState<TouchedMap>({});
-  const [submitCount, setSubmitCount] = useState(0);
-  const warehouseOptions = ops.buildWarehouseOptions(store);
-  const productOptions = ops.buildProductOptions(store);
-
-  const errors = validateInboundForm(formData);
-
-  function updateField<Key extends keyof InboundFormData>(key: Key, value: InboundFormData[Key]) {
-    setFormData((current) => ({
-      ...current,
-      [key]: value,
-    }));
-  }
-
-  function updateLineItem(index: number, patch: Partial<OrderLineItem>) {
-    setFormData((current) => ({
-      ...current,
-      lineItems: current.lineItems.map((lineItem, lineIndex) => (lineIndex === index ? { ...lineItem, ...patch } : lineItem)),
-    }));
-  }
-
-  function addLineItem() {
-    setFormData((current) => ({
-      ...current,
-      lineItems: [...current.lineItems, ops.createEmptyLineItem()],
-    }));
-  }
-
-  function removeLineItem(index: number) {
-    setFormData((current) => ({
-      ...current,
-      lineItems: current.lineItems.filter((_, lineIndex) => lineIndex !== index),
-    }));
-  }
-
-  function saveInbound(confirmReceipt: boolean) {
-    setSubmitCount((count) => count + 1);
-
-    if (Object.keys(errors).length > 0) {
-      return;
-    }
-
-    const nextTimestamp = ops.nowIso();
-    const nextRecord = {
-      id: sourceRecord?.id ?? formData.inboundNo,
-      inboundNo: formData.inboundNo,
-      warehouseId: formData.warehouseId,
-      status: confirmReceipt ? 'Confirmed' : formData.status,
-      supplierName: formData.supplierName.trim(),
-      referenceNo: formData.referenceNo.trim(),
-      plannedDate: formData.plannedDate,
-      createdBy: sourceRecord?.createdBy ?? ops.currentOperator,
-      createdAt: sourceRecord?.createdAt ?? nextTimestamp,
-      confirmedAt: confirmReceipt ? nextTimestamp : sourceRecord?.confirmedAt ?? '',
-      notes: formData.notes.trim(),
-      lineItems: getCommittedLineItems(formData.lineItems).map((lineItem) => ({ ...lineItem })),
-    } satisfies WorkspaceStore['inboundOrders'][number];
-
-    setStore((current) => ({
-      ...current,
-      inboundOrders: sourceRecord
-        ? current.inboundOrders.map((order) => (order.id === sourceRecord.id ? nextRecord : order))
-        : [nextRecord, ...current.inboundOrders],
-    }));
-
-    setSelections((current) => ({
-      ...current,
-      inboundId: nextRecord.id,
-    }));
-
-    if (mode === 'create') {
-      onNavigate('inbound-edit');
-    }
-  }
-
-  const flowConfig = getWarehouseFlowConfig('inbound');
-  const flowSteps = buildInboundFormSteps(formData);
-  const previewSnapshot = buildInboundFormSnapshot(formData, store);
-  const readyToConfirm = flowSteps[0].state === 'done' && flowSteps[1].state === 'done';
-
-  return (
-    <section className="workspace-layout workspace-layout--warehouse-flow">
-      <section className="page-panel page-panel--main page-panel--warehouse-main">
-        <WarehouseFlowHeader
-          kicker={flowConfig.formKicker}
-          title={page.title}
-          description={flowConfig.formDescription}
-          actions={
-            <>
-              <button className="secondary-button" type="button" onClick={() => onNavigate('inbound-list')}>
-                {flowConfig.backLabel}
-              </button>
-              {mode === 'edit' ? (
-                <button className="ghost-link" type="button" onClick={() => onNavigate(detailRouteByModule.inbound)}>
-                  Review receipt
-                </button>
-              ) : null}
-            </>
-          }
-        />
-
-        <WarehouseFlowSteps items={flowSteps} />
-
-        <form
-          className="workflow-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-          }}
-        >
-          <FormSection title="Order Header" description="Start with warehouse, supplier, and planned date.">
-            <div className="form-section__grid form-section__grid--two">
-              <ReadonlyField label="Inbound number" value={formData.inboundNo || 'Generated on save'} />
-              <SearchSelectField
-                label="Warehouse"
-                value={formData.warehouseId}
-                options={warehouseOptions}
-                onChange={(value) => updateField('warehouseId', value)}
-                onBlur={() => setTouchedFlag('warehouseId', setTouched)}
-                placeholder="Search warehouse"
-                required
-                error={getVisibleError('warehouseId', errors, touched, submitCount)}
-              />
-            </div>
-
-            <div className="form-section__grid form-section__grid--two">
-              <TextField
-                label="Supplier"
-                value={formData.supplierName}
-                onChange={(value) => updateField('supplierName', value)}
-                onBlur={() => setTouchedFlag('supplierName', setTouched)}
-                placeholder="Enter the supplier name"
-                required
-                error={getVisibleError('supplierName', errors, touched, submitCount)}
-              />
-              <TextField
-                label="Reference number"
-                value={formData.referenceNo}
-                onChange={(value) => updateField('referenceNo', value)}
-                placeholder="ASN, packing list, or dock reference"
-              />
-            </div>
-
-            <div className="form-section__grid form-section__grid--two">
-              <TextField
-                label="Planned date"
-                value={formData.plannedDate}
-                onChange={(value) => updateField('plannedDate', value)}
-                onBlur={() => setTouchedFlag('plannedDate', setTouched)}
-                placeholder="YYYY-MM-DD"
-                required
-                error={getVisibleError('plannedDate', errors, touched, submitCount)}
-                type="date"
-              />
-              <SelectField
-                label="Status"
-                value={formData.status}
-                options={ops.inboundStatusOptions}
-                onChange={(value) => updateField('status', value as InboundFormData['status'])}
-              />
-            </div>
-          </FormSection>
-
-          <FormSection title="Product Lines" description="Add at least one product line with quantity before confirmation.">
-            <LineItemsEditor
-              lineItems={formData.lineItems}
-              productOptions={productOptions}
-              store={store}
-              touched={touched}
-              submitCount={submitCount}
-              errors={errors}
-              onAddLineItem={addLineItem}
-              onRemoveLineItem={removeLineItem}
-              onLineItemChange={updateLineItem}
-              setTouched={setTouched}
-            />
-          </FormSection>
-
-          <FormSection title="Notes">
-            <TextAreaField
-              label="Inbound notes"
-              value={formData.notes}
-              onChange={(value) => updateField('notes', value)}
-              placeholder="Add dock instructions or receipt exceptions"
-            />
-          </FormSection>
-
-          <section className="form-section form-section--actions">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">Finish</p>
-                <h2>Save or confirm</h2>
-              </div>
-              <p className="section-copy">
-                {readyToConfirm
-                  ? 'Save the receipt as work in progress or confirm it when warehouse review is complete.'
-                  : flowConfig.formLead}
-              </p>
-            </div>
-
-            <div className="button-row">
-              <button className="secondary-button" type="button" onClick={() => saveInbound(false)}>
-                Save Draft
-              </button>
-              <button className="primary-button" type="button" onClick={() => saveInbound(true)}>
-                {flowConfig.confirmLabel}
-              </button>
-              <button className="ghost-link" type="button" onClick={() => onNavigate('inbound-list')}>
-                {flowConfig.backLabel}
-              </button>
-            </div>
-          </section>
-        </form>
-      </section>
-
-      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
-        {mode === 'edit' ? (
-          <section className="rail-block">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">{flowConfig.selectedLabel}</p>
-                <h2>Switch order</h2>
-              </div>
-            </div>
-
-            <SearchSelectField
-              label={flowConfig.switchLabel}
-              value={selections.inboundId}
-              options={ops.buildSelectionOptions(store, 'inbound')}
-              onChange={(value) => setSelections((current) => ({ ...current, inboundId: value }))}
-              placeholder="Search receipt record"
-            />
-          </section>
-        ) : (
-          <section className="rail-block">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">Start here</p>
-                <h2>{flowConfig.primaryCreateLabel}</h2>
-              </div>
-              <p className="section-copy">{flowConfig.formLead}</p>
-            </div>
-          </section>
-        )}
-
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">Preview</p>
-              <h2>{previewSnapshot.title}</h2>
-            </div>
-          </div>
-
-          <div className="preview-grid">
-            <PreviewStat label="Status" value={formData.status} tone={ops.getStatusTone(formData.status)} />
-            {previewSnapshot.metrics.map((metric) => (
-              <PreviewStat key={metric.label} label={metric.label} value={metric.value} />
-            ))}
-          </div>
-
-          <WarehouseFlowFacts facts={previewSnapshot.facts} />
-        </section>
-      </aside>
-    </section>
-  );
-}
-
-function OutboundFormPage({
-  mode,
-  page,
-  store,
-  setStore,
-  selections,
-  setSelections,
-  onNavigate,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'setStore' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  mode: 'create' | 'edit';
-}) {
-  const sourceRecord = mode === 'edit' ? ops.getSelectedOutbound(store, selections) : undefined;
-
-  return (
-    <OutboundFormEditor
-      key={`${mode}:${sourceRecord?.id ?? 'create'}`}
-      mode={mode}
-      page={page}
-      store={store}
-      setStore={setStore}
-      sourceRecord={sourceRecord}
-      selections={selections}
-      setSelections={setSelections}
-      onNavigate={onNavigate}
-    />
-  );
-}
-
-function OutboundFormEditor({
-  mode,
-  page,
-  store,
-  setStore,
-  sourceRecord,
-  selections,
-  setSelections,
-  onNavigate,
-}: Pick<OperationalModuleViewProps, 'page' | 'store' | 'setStore' | 'selections' | 'setSelections' | 'onNavigate'> & {
-  mode: 'create' | 'edit';
-  sourceRecord?: WorkspaceStore['outboundOrders'][number];
-}) {
-  const [formData, setFormData] = useState<OutboundFormData>(() => {
-    if (sourceRecord) {
+    if (sourceRecord && 'destination' in sourceRecord) {
       return ops.mapOutboundToFormData(sourceRecord);
     }
 
-    const nextDraft = ops.createOutboundDraft();
-    nextDraft.outboundNo = ops.createOutboundNumber(store);
-    return nextDraft;
+    const draft = ops.createOutboundDraft();
+    draft.outboundNo = ops.createOutboundNumber(store);
+    return draft;
   });
-  const [touched, setTouched] = useState<TouchedMap>({});
-  const [submitCount, setSubmitCount] = useState(0);
+
   const warehouseOptions = ops.buildWarehouseOptions(store);
-  const productOptions = ops.buildProductOptions(store);
+  const isInbound = module === 'inbound';
+  const text = {
+    formKicker: isInbound ? copyByLocale(locale, 'Inbound form', '入库表单') : copyByLocale(locale, 'Outbound form', '出库表单'),
+    updateOrder: copyByLocale(locale, 'Update order', '更新订单'),
+    createOrder: copyByLocale(locale, 'Create order', '创建订单'),
+    back: copyByLocale(locale, 'Back', '返回'),
+    saveDraft: copyByLocale(locale, 'Save Draft', '保存草稿'),
+    submitForApproval: copyByLocale(locale, 'Submit for Approval', '提交审批'),
+    orderNo: isInbound ? copyByLocale(locale, 'Inbound No', '入库单号') : copyByLocale(locale, 'Outbound No', '出库单号'),
+    warehouse: copyByLocale(locale, 'Warehouse', '仓库'),
+    selectWarehouse: copyByLocale(locale, 'Select warehouse', '选择仓库'),
+    supplier: copyByLocale(locale, 'Supplier', '供应商'),
+    referenceNo: copyByLocale(locale, 'Reference No', '参考单号'),
+    plannedDate: copyByLocale(locale, 'Planned Date', '计划日期'),
+    destination: copyByLocale(locale, 'Destination', '目的地'),
+    carrier: copyByLocale(locale, 'Carrier', '承运商'),
+    shipmentDate: copyByLocale(locale, 'Shipment Date', '发运日期'),
+    notes: copyByLocale(locale, 'Notes', '备注'),
+    productLines: copyByLocale(locale, 'Product lines', '商品明细'),
+    lineItems: copyByLocale(locale, 'Line items', '明细行'),
+    addLine: copyByLocale(locale, 'Add line', '新增行'),
+    warehouseRequired: copyByLocale(locale, 'Warehouse is required.', '仓库必填。'),
+    supplierRequired: copyByLocale(locale, 'Supplier is required.', '供应商必填。'),
+    destinationRequired: copyByLocale(locale, 'Destination is required.', '目的地必填。'),
+    lineRequired: copyByLocale(locale, 'Add at least one product line.', '至少添加一条商品明细。'),
+    cannotSave: copyByLocale(locale, 'Cannot save order', '无法保存订单'),
+    resolveIssues: copyByLocale(locale, 'Please resolve the highlighted issues before saving.', '请先处理高亮提示的问题后再保存。'),
+  };
 
-  const errors = validateOutboundForm(formData);
-
-  function updateField<Key extends keyof OutboundFormData>(key: Key, value: OutboundFormData[Key]) {
-    setFormData((current) => ({
-      ...current,
-      [key]: value,
-    }));
+  function patchFormData(next: Partial<ops.InboundFormData & ops.OutboundFormData>) {
+    setFormData((current) => ({ ...current, ...next }));
   }
 
-  function updateLineItem(index: number, patch: Partial<OrderLineItem>) {
-    setFormData((current) => ({
-      ...current,
-      lineItems: current.lineItems.map((lineItem, lineIndex) => (lineIndex === index ? { ...lineItem, ...patch } : lineItem)),
-    }));
+  function updateLineItems(lineItems: ops.OrderLineItem[]) {
+    setFormData((current) => ({ ...current, lineItems }));
   }
 
-  function addLineItem() {
-    setFormData((current) => ({
-      ...current,
-      lineItems: [...current.lineItems, ops.createEmptyLineItem()],
-    }));
+  function validate() {
+    const errors: string[] = [];
+    const lineItems = formData.lineItems.filter((lineItem) => lineItem.productId && Number(lineItem.quantity) > 0);
+
+    if (!formData.warehouseId) {
+      errors.push(text.warehouseRequired);
+    }
+
+    if (module === 'inbound' && !('supplierName' in formData ? formData.supplierName.trim() : '')) {
+      errors.push(text.supplierRequired);
+    }
+
+    if (module === 'outbound' && !('destination' in formData ? formData.destination.trim() : '')) {
+      errors.push(text.destinationRequired);
+    }
+
+    if (lineItems.length === 0) {
+      errors.push(text.lineRequired);
+    }
+
+    return errors;
   }
 
-  function removeLineItem(index: number) {
-    setFormData((current) => ({
-      ...current,
-      lineItems: current.lineItems.filter((_, lineIndex) => lineIndex !== index),
-    }));
-  }
+  function save(submitForApproval: boolean) {
+    const errors = validate();
 
-  function saveOutbound(confirmShipment: boolean) {
-    setSubmitCount((count) => count + 1);
-
-    if (Object.keys(errors).length > 0) {
+    if (errors.length > 0) {
+      setFeedback({
+        tone: 'error',
+        title: text.cannotSave,
+        detail: text.resolveIssues,
+        errors,
+      });
       return;
     }
 
-    const nextTimestamp = ops.nowIso();
-    const nextRecord = {
-      id: sourceRecord?.id ?? formData.outboundNo,
-      outboundNo: formData.outboundNo,
-      warehouseId: formData.warehouseId,
-      destination: formData.destination.trim(),
-      carrier: formData.carrier.trim(),
-      shipmentDate: formData.shipmentDate,
-      status: confirmShipment ? 'Shipped' : formData.status,
-      createdBy: sourceRecord?.createdBy ?? ops.currentOperator,
-      createdAt: sourceRecord?.createdAt ?? nextTimestamp,
-      confirmedAt: confirmShipment ? nextTimestamp : sourceRecord?.confirmedAt ?? '',
-      notes: formData.notes.trim(),
-      lineItems: getCommittedLineItems(formData.lineItems).map((lineItem) => ({ ...lineItem })),
-    } satisfies WorkspaceStore['outboundOrders'][number];
+    if (module === 'inbound') {
+      const result = ops.saveInboundOrder(store, formData as ops.InboundFormData, {
+        existingId: sourceRecord && 'supplierName' in sourceRecord ? sourceRecord.id : undefined,
+        submitForApproval,
+        actor: currentUser,
+      });
 
-    setStore((current) => ({
-      ...current,
-      outboundOrders: sourceRecord
-        ? current.outboundOrders.map((order) => (order.id === sourceRecord.id ? nextRecord : order))
-        : [nextRecord, ...current.outboundOrders],
-    }));
-
-    setSelections((current) => ({
-      ...current,
-      outboundId: nextRecord.id,
-    }));
-
-    if (mode === 'create') {
-      onNavigate('outbound-edit');
+      setStore(result.store);
+      setSelections((current) => ({ ...current, inboundId: result.selectionId }));
+      onNavigate('inbound-detail');
+      return;
     }
-  }
 
-  const flowConfig = getWarehouseFlowConfig('outbound');
-  const flowSteps = buildOutboundFormSteps(formData);
-  const previewSnapshot = buildOutboundFormSnapshot(formData, store);
-  const readyToConfirm = flowSteps[0].state === 'done' && flowSteps[1].state === 'done';
+    const result = ops.saveOutboundOrder(store, formData as ops.OutboundFormData, {
+      existingId: sourceRecord && 'destination' in sourceRecord ? sourceRecord.id : undefined,
+      submitForApproval,
+      actor: currentUser,
+    });
+
+    setStore(result.store);
+    setSelections((current) => ({ ...current, outboundId: result.selectionId }));
+    onNavigate('outbound-detail');
+  }
 
   return (
-    <section className="workspace-layout workspace-layout--warehouse-flow">
-      <section className="page-panel page-panel--main page-panel--warehouse-main">
-        <WarehouseFlowHeader
-          kicker={flowConfig.formKicker}
-          title={page.title}
-          description={flowConfig.formDescription}
-          actions={
-            <>
-              <button className="secondary-button" type="button" onClick={() => onNavigate('outbound-list')}>
-                {flowConfig.backLabel}
-              </button>
-              {mode === 'edit' ? (
-                <button className="ghost-link" type="button" onClick={() => onNavigate(detailRouteByModule.outbound)}>
-                  Review shipment
-                </button>
-              ) : null}
-            </>
-          }
-        />
+    <>
+      <ImportFeedbackBanner feedback={feedback} locale={locale} onClose={() => setFeedback(null)} />
 
-        <WarehouseFlowSteps items={flowSteps} />
-
-        <form
-          className="workflow-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-          }}
-        >
-          <FormSection title="Order Header" description="Start with warehouse, destination, and ship date.">
-            <div className="form-section__grid form-section__grid--two">
-              <ReadonlyField label="Outbound number" value={formData.outboundNo || 'Generated on save'} />
-              <SearchSelectField
-                label="Warehouse"
-                value={formData.warehouseId}
-                options={warehouseOptions}
-                onChange={(value) => updateField('warehouseId', value)}
-                onBlur={() => setTouchedFlag('warehouseId', setTouched)}
-                placeholder="Search warehouse"
-                required
-                error={getVisibleError('warehouseId', errors, touched, submitCount)}
-              />
-            </div>
-
-            <div className="form-section__grid form-section__grid--two">
-              <TextField
-                label="Destination"
-                value={formData.destination}
-                onChange={(value) => updateField('destination', value)}
-                onBlur={() => setTouchedFlag('destination', setTouched)}
-                placeholder="Enter the destination"
-                required
-                error={getVisibleError('destination', errors, touched, submitCount)}
-              />
-              <TextField
-                label="Carrier"
-                value={formData.carrier}
-                onChange={(value) => updateField('carrier', value)}
-                placeholder="Carrier or transport partner"
-              />
-            </div>
-
-            <div className="form-section__grid form-section__grid--two">
-              <TextField
-                label="Shipment date"
-                value={formData.shipmentDate}
-                onChange={(value) => updateField('shipmentDate', value)}
-                onBlur={() => setTouchedFlag('shipmentDate', setTouched)}
-                placeholder="YYYY-MM-DD"
-                required
-                error={getVisibleError('shipmentDate', errors, touched, submitCount)}
-                type="date"
-              />
-              <SelectField
-                label="Status"
-                value={formData.status}
-                options={ops.outboundStatusOptions}
-                onChange={(value) => updateField('status', value as OutboundFormData['status'])}
-              />
-            </div>
-          </FormSection>
-
-          <FormSection title="Product Lines" description="Add at least one product line with quantity before confirmation.">
-            <LineItemsEditor
-              lineItems={formData.lineItems}
-              productOptions={productOptions}
-              store={store}
-              touched={touched}
-              submitCount={submitCount}
-              errors={errors}
-              onAddLineItem={addLineItem}
-              onRemoveLineItem={removeLineItem}
-              onLineItemChange={updateLineItem}
-              setTouched={setTouched}
-            />
-          </FormSection>
-
-          <FormSection title="Notes">
-            <TextAreaField
-              label="Outbound notes"
-              value={formData.notes}
-              onChange={(value) => updateField('notes', value)}
-              placeholder="Add dispatch instructions or shipment exceptions"
-            />
-          </FormSection>
-
-          <section className="form-section form-section--actions">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">Finish</p>
-                <h2>Save or confirm</h2>
-              </div>
-              <p className="section-copy">
-                {readyToConfirm
-                  ? 'Save the shipment as work in progress or confirm it when packing review is complete.'
-                  : flowConfig.formLead}
-              </p>
-            </div>
-
-            <div className="button-row">
-              <button className="secondary-button" type="button" onClick={() => saveOutbound(false)}>
-                Save Draft
-              </button>
-              <button className="primary-button" type="button" onClick={() => saveOutbound(true)}>
-                {flowConfig.confirmLabel}
-              </button>
-              <button className="ghost-link" type="button" onClick={() => onNavigate('outbound-list')}>
-                {flowConfig.backLabel}
-              </button>
-            </div>
-          </section>
-        </form>
-      </section>
-
-      <aside className="page-panel page-panel--rail page-panel--warehouse-rail">
-        {mode === 'edit' ? (
-          <section className="rail-block">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">{flowConfig.selectedLabel}</p>
-                <h2>Switch order</h2>
-              </div>
-            </div>
-
-            <SearchSelectField
-              label={flowConfig.switchLabel}
-              value={selections.outboundId}
-              options={ops.buildSelectionOptions(store, 'outbound')}
-              onChange={(value) => setSelections((current) => ({ ...current, outboundId: value }))}
-              placeholder="Search shipment record"
-            />
-          </section>
-        ) : (
-          <section className="rail-block">
-            <div className="section-heading section-heading--stack">
-              <div>
-                <p className="section-kicker">Start here</p>
-                <h2>{flowConfig.primaryCreateLabel}</h2>
-              </div>
-              <p className="section-copy">{flowConfig.formLead}</p>
-            </div>
-          </section>
-        )}
-
-        <section className="rail-block">
-          <div className="section-heading section-heading--stack">
-            <div>
-              <p className="section-kicker">Preview</p>
-              <h2>{previewSnapshot.title}</h2>
-            </div>
-          </div>
-
-          <div className="preview-grid">
-            <PreviewStat label="Status" value={formData.status} tone={ops.getStatusTone(formData.status)} />
-            {previewSnapshot.metrics.map((metric) => (
-              <PreviewStat key={metric.label} label={metric.label} value={metric.value} />
-            ))}
-          </div>
-
-          <WarehouseFlowFacts facts={previewSnapshot.facts} />
-        </section>
-      </aside>
-    </section>
-  );
-}
-
-function buildListData(module: OperationalModuleKey, store: WorkspaceStore) {
-  switch (module) {
-    case 'product':
-      return {
-        recordIds: store.products.map((product) => product.id),
-        rows: ops.buildProductRows(store),
-      };
-    case 'category':
-      return {
-        recordIds: store.categories.map((category) => category.id),
-        rows: ops.buildCategoryRows(store),
-      };
-    case 'inbound':
-      return {
-        recordIds: store.inboundOrders.map((order) => order.id),
-        rows: ops.buildInboundRows(store),
-      };
-    case 'outbound':
-      return {
-        recordIds: store.outboundOrders.map((order) => order.id),
-        rows: ops.buildOutboundRows(store),
-      };
-  }
-}
-
-function buildDetailSection(module: OperationalModuleKey, store: WorkspaceStore, selections: OperationalSelections) {
-  switch (module) {
-    case 'product':
-      return ops.buildProductDetailSection(store, selections);
-    case 'category':
-      return ops.buildCategoryDetailSection(store, selections);
-    case 'inbound':
-      return ops.buildInboundDetailSection(store, selections);
-    case 'outbound':
-      return ops.buildOutboundDetailSection(store, selections);
-  }
-}
-
-function getSelectedRecordId(module: OperationalModuleKey, selections: OperationalSelections) {
-  switch (module) {
-    case 'product':
-      return selections.productId;
-    case 'category':
-      return selections.categoryId;
-    case 'inbound':
-      return selections.inboundId;
-    case 'outbound':
-      return selections.outboundId;
-  }
-}
-
-function setRecordSelection(
-  module: OperationalModuleKey,
-  value: string,
-  setSelections: Dispatch<SetStateAction<OperationalSelections>>,
-) {
-  setSelections((current) => {
-    switch (module) {
-      case 'product':
-        return { ...current, productId: value };
-      case 'category':
-        return { ...current, categoryId: value };
-      case 'inbound':
-        return { ...current, inboundId: value };
-      case 'outbound':
-        return { ...current, outboundId: value };
-    }
-  });
-}
-
-function getSelectionTone(module: OperationalModuleKey, store: WorkspaceStore, selections: OperationalSelections) {
-  switch (module) {
-    case 'product':
-      return ops.getStatusTone(ops.getSelectedProduct(store, selections)?.status ?? 'Draft');
-    case 'category':
-      return ops.getStatusTone(ops.getSelectedCategory(store, selections)?.status ?? 'Draft');
-    case 'inbound':
-      return ops.getStatusTone(ops.getSelectedInbound(store, selections)?.status ?? 'Draft');
-    case 'outbound':
-      return ops.getStatusTone(ops.getSelectedOutbound(store, selections)?.status ?? 'Draft');
-  }
-}
-
-function getListRailNotes(module: OperationalModuleKey) {
-  switch (module) {
-    case 'product':
-      return [
-        'Use create for new master data and edit for minor corrections.',
-        'Category and warehouse stay linked to reduce unassigned products.',
-        'Status should communicate whether the SKU is ready for movement.',
-      ];
-    case 'category':
-      return [
-        'Keep category names short enough to scan in product search.',
-        'Use Draft while naming is still under review.',
-        'Hold should stop new assignments until cleanup is complete.',
-      ];
-    case 'inbound':
-      return [
-        'Create receipts from the list to keep warehouse ownership explicit.',
-        'Pending QC should be used only after a quantity or quality exception.',
-        'Confirm Receipt should happen after final line review.',
-      ];
-    case 'outbound':
-      return [
-        'Create shipments from the list to keep destination context visible.',
-        'Use Picking and Packed to communicate operator progress.',
-        'Confirm Shipment should happen only after dispatch handoff.',
-      ];
-  }
-}
-
-function getDetailRailNotes(module: OperationalModuleKey) {
-  switch (module) {
-    case 'product':
-      return [
-        'Use Edit Product when code, unit, or warehouse context changes.',
-        'Product notes should help receiving and picking teams, not repeat the name.',
-      ];
-    case 'category':
-      return [
-        'Edit the category when naming, description, or status needs correction.',
-        'Category notes should guide product assignment and cleanup decisions.',
-      ];
-    case 'inbound':
-      return [
-        'Review line items before confirming receipt.',
-        'Supplier and reference details should stay close to the warehouse header.',
-      ];
-    case 'outbound':
-      return [
-        'Review line items and destination before confirming shipment.',
-        'Carrier and staging notes should remain visible until dispatch is complete.',
-      ];
-  }
-}
-
-function renderTableCell(columnKey: string, value: string) {
-  if (columnKey === 'status') {
-    return <StatusPill value={value} />;
-  }
-
-  return value;
-}
-
-function validateProductForm(values: ProductFormData) {
-  const errors: ErrorMap = {};
-
-  if (!values.productName.trim()) {
-    errors.productName = 'Enter a product name.';
-  }
-
-  if (!values.categoryId) {
-    errors.categoryId = 'Select a category.';
-  }
-
-  if (!values.warehouseId) {
-    errors.warehouseId = 'Select a warehouse.';
-  }
-
-  if (!values.productCode.trim()) {
-    errors.productCode = 'Enter or generate a product code.';
-  }
-
-  if (!values.unit.trim()) {
-    errors.unit = 'Enter a unit.';
-  }
-
-  return errors;
-}
-
-function validateCategoryForm(values: CategoryFormData) {
-  const errors: ErrorMap = {};
-
-  if (!values.categoryName.trim()) {
-    errors.categoryName = 'Enter a category name.';
-  }
-
-  if (!values.categoryCode.trim()) {
-    errors.categoryCode = 'Enter or generate a category code.';
-  }
-
-  return errors;
-}
-
-function validateInboundForm(values: InboundFormData) {
-  const errors: ErrorMap = {};
-
-  if (!values.warehouseId) {
-    errors.warehouseId = 'Select a warehouse.';
-  }
-
-  if (!values.supplierName.trim()) {
-    errors.supplierName = 'Enter a supplier name.';
-  }
-
-  if (!values.plannedDate.trim()) {
-    errors.plannedDate = 'Enter the planned receipt date.';
-  }
-
-  validateLineItems(values.lineItems, errors);
-  return errors;
-}
-
-function validateOutboundForm(values: OutboundFormData) {
-  const errors: ErrorMap = {};
-
-  if (!values.warehouseId) {
-    errors.warehouseId = 'Select a warehouse.';
-  }
-
-  if (!values.destination.trim()) {
-    errors.destination = 'Enter a destination.';
-  }
-
-  if (!values.shipmentDate.trim()) {
-    errors.shipmentDate = 'Enter the shipment date.';
-  }
-
-  validateLineItems(values.lineItems, errors);
-  return errors;
-}
-
-function validateLineItems(lineItems: OrderLineItem[], errors: ErrorMap) {
-  const meaningfulLineIndexes = lineItems
-    .map((lineItem, index) => ({
-      index,
-      hasContent: Boolean(lineItem.productId || lineItem.quantity.trim() || lineItem.notes.trim()),
-    }))
-    .filter((item) => item.hasContent)
-    .map((item) => item.index);
-
-  if (meaningfulLineIndexes.length === 0) {
-    errors.lineItems = 'Add at least one line item.';
-  }
-
-  lineItems.forEach((lineItem, index) => {
-    const shouldValidate = meaningfulLineIndexes.includes(index) || lineItems.length === 1;
-
-    if (!shouldValidate) {
-      return;
-    }
-
-    if (!lineItem.productId) {
-      errors[`lineItems.${index}.productId`] = 'Select a product.';
-    }
-
-    if (!lineItem.quantity.trim()) {
-      errors[`lineItems.${index}.quantity`] = 'Enter a quantity.';
-      return;
-    }
-
-    const numericQuantity = Number(lineItem.quantity);
-
-    if (!Number.isFinite(numericQuantity) || numericQuantity <= 0) {
-      errors[`lineItems.${index}.quantity`] = 'Use a quantity greater than zero.';
-    }
-  });
-}
-
-function sumQuantities(lineItems: OrderLineItem[]) {
-  return lineItems.reduce((total, lineItem) => total + (Number(lineItem.quantity) || 0), 0);
-}
-
-function getCommittedLineItems(lineItems: OrderLineItem[]) {
-  return lineItems.filter((lineItem) => lineItem.productId || lineItem.quantity.trim() || lineItem.notes.trim());
-}
-
-function setTouchedFlag(key: string, setTouched: Dispatch<SetStateAction<TouchedMap>>) {
-  setTouched((current) => ({
-    ...current,
-    [key]: true,
-  }));
-}
-
-function getVisibleError(key: string, errors: ErrorMap, touched: TouchedMap, submitCount: number) {
-  return touched[key] || submitCount > 0 ? errors[key] : undefined;
-}
-
-function RailFrame({
-  page,
-  onNavigate,
-  children,
-}: {
-  page: ModulePage;
-  onNavigate: (route: Route) => void;
-  children?: ReactNode;
-}) {
-  return (
-    <aside className="page-panel page-panel--rail">
-      {children}
-
-      <section className="rail-block">
-        <div className="section-heading section-heading--stack">
+      <section className="admin-panel">
+        <div className="admin-panel__header">
           <div>
-            <p className="section-kicker">Entity source</p>
-            <h2>{page.entityLabel}</h2>
+            <p className="section-kicker">{text.formKicker}</p>
+            <h2>{route.endsWith('-edit') ? text.updateOrder : text.createOrder}</h2>
           </div>
-          <p className="section-copy">Field names below stay aligned with the documented entity list while the form groups follow the business workflow.</p>
-        </div>
 
-        <div className="blueprint-groups">
-          {page.fieldBlueprint.map((group) => (
-            <div className="blueprint-group" key={group.title}>
-              <p className="blueprint-group__title">{group.title}</p>
-              <ul className="mono-list">
-                {group.fields.map((field) => (
-                  <li key={field}>{field}</li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="rail-block">
-        <div className="section-heading section-heading--stack">
-          <div>
-            <p className="section-kicker">Actions</p>
-            <h2>Route controls</h2>
-          </div>
-        </div>
-
-        <div className="button-stack">
-          {page.actions.map((action) => (
+          <div className="admin-toolbar__actions">
             <button
-              key={action.label}
-              className={action.tone === 'primary' ? 'primary-button' : 'secondary-button'}
+              className="secondary-button"
               type="button"
-              onClick={() => onNavigate(action.route)}
+              onClick={() => onNavigate(module === 'inbound' ? 'inbound-list' : 'outbound-list')}
             >
-              {action.label}
+              {text.back}
             </button>
-          ))}
+            <button className="secondary-button" type="button" onClick={() => save(false)}>
+              {text.saveDraft}
+            </button>
+            <button className="primary-button" type="button" onClick={() => save(true)}>
+              {text.submitForApproval}
+            </button>
+          </div>
+        </div>
+
+        <div className="form-grid">
+          <label className="form-field">
+            <span>{text.orderNo}</span>
+            <input
+              className="admin-input"
+              type="text"
+              value={module === 'inbound' ? (formData as ops.InboundFormData).inboundNo : (formData as ops.OutboundFormData).outboundNo}
+              onChange={(event) => patchFormData(module === 'inbound' ? { inboundNo: event.target.value } : { outboundNo: event.target.value })}
+            />
+          </label>
+
+          <label className="form-field">
+            <span>{text.warehouse}</span>
+            <select className="admin-select" value={formData.warehouseId} onChange={(event) => patchFormData({ warehouseId: event.target.value })}>
+              <option value="">{text.selectWarehouse}</option>
+              {warehouseOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {module === 'inbound' ? (
+            <>
+              <label className="form-field">
+                <span>{text.supplier}</span>
+                <input
+                  className="admin-input"
+                  type="text"
+                  value={(formData as ops.InboundFormData).supplierName}
+                  onChange={(event) => patchFormData({ supplierName: event.target.value })}
+                />
+              </label>
+
+              <label className="form-field">
+                <span>{text.referenceNo}</span>
+                <input
+                  className="admin-input"
+                  type="text"
+                  value={(formData as ops.InboundFormData).referenceNo}
+                  onChange={(event) => patchFormData({ referenceNo: event.target.value })}
+                />
+              </label>
+
+              <label className="form-field">
+                <span>{text.plannedDate}</span>
+                <input
+                  className="admin-input"
+                  type="date"
+                  value={(formData as ops.InboundFormData).plannedDate}
+                  onChange={(event) => patchFormData({ plannedDate: event.target.value })}
+                />
+              </label>
+            </>
+          ) : (
+            <>
+              <label className="form-field">
+                <span>{text.destination}</span>
+                <input
+                  className="admin-input"
+                  type="text"
+                  value={(formData as ops.OutboundFormData).destination}
+                  onChange={(event) => patchFormData({ destination: event.target.value })}
+                />
+              </label>
+
+              <label className="form-field">
+                <span>{text.carrier}</span>
+                <input
+                  className="admin-input"
+                  type="text"
+                  value={(formData as ops.OutboundFormData).carrier}
+                  onChange={(event) => patchFormData({ carrier: event.target.value })}
+                />
+              </label>
+
+              <label className="form-field">
+                <span>{text.shipmentDate}</span>
+                <input
+                  className="admin-input"
+                  type="date"
+                  value={(formData as ops.OutboundFormData).shipmentDate}
+                  onChange={(event) => patchFormData({ shipmentDate: event.target.value })}
+                />
+              </label>
+            </>
+          )}
+        </div>
+
+        <label className="form-field">
+          <span>{text.notes}</span>
+          <textarea
+            className="admin-textarea"
+            rows={3}
+            value={formData.notes}
+            onChange={(event) => patchFormData({ notes: event.target.value })}
+          />
+        </label>
+
+        <div className="admin-panel__header admin-panel__header--sub">
+          <div>
+            <p className="section-kicker">{text.productLines}</p>
+            <h3>{text.lineItems}</h3>
+          </div>
+
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => updateLineItems([...formData.lineItems, ops.createEmptyLineItem()])}
+          >
+            {text.addLine}
+          </button>
+        </div>
+
+        <LineItemsTable locale={locale} store={store} lineItems={formData.lineItems} editable onChange={updateLineItems} />
+      </section>
+    </>
+  );
+}
+
+function ApprovalWorkspace({ store, setStore, selections, setSelections, onNavigate, locale, currentUser }: OperationalModuleViewProps) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [search, setSearch] = useState('');
+  const [filterValue, setFilterValue] = useState('all');
+  const [feedback, setFeedback] = useState<ImportFeedback | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const deferredSearch = useDeferredValue(search);
+  const queue = useMemo(() => ops.buildApprovalQueue(store), [store]);
+  const text = {
+    searchPlaceholder: copyByLocale(locale, 'Search order no, warehouse, partner, or requester', '搜索订单号、仓库、合作方或申请人'),
+    allApprovals: copyByLocale(locale, 'All approvals', '全部审批状态'),
+    pendingApproval: copyByLocale(locale, 'Pending approval', '待审批'),
+    approved: copyByLocale(locale, 'Approved', '已通过'),
+    rejected: copyByLocale(locale, 'Rejected', '已驳回'),
+    newInbound: copyByLocale(locale, 'New Inbound', '新建入库单'),
+    queueKicker: copyByLocale(locale, 'Approval queue', '审批队列'),
+    queueTitle: copyByLocale(locale, 'Approval Center', '审批中心'),
+    module: copyByLocale(locale, 'Module', '模块'),
+    orderNo: copyByLocale(locale, 'Order No', '订单号'),
+    warehouse: copyByLocale(locale, 'Warehouse', '仓库'),
+    partner: copyByLocale(locale, 'Partner', '合作方'),
+    units: copyByLocale(locale, 'Units', '数量'),
+    orderStatus: copyByLocale(locale, 'Order Status', '订单状态'),
+    approval: copyByLocale(locale, 'Approval', '审批状态'),
+    action: copyByLocale(locale, 'Action', '操作'),
+    view: copyByLocale(locale, 'View', '查看'),
+    approve: copyByLocale(locale, 'Approve', '通过'),
+    review: copyByLocale(locale, 'Review', '处理'),
+    emptyList: copyByLocale(locale, 'No approval records matched the current filters.', '当前筛选条件下没有匹配的审批记录。'),
+    selectedApproval: copyByLocale(locale, 'Selected approval', '当前审批项'),
+    openDetail: copyByLocale(locale, 'Open detail', '打开详情'),
+    submittedBy: copyByLocale(locale, 'Submitted By', '提交人'),
+    submittedAt: copyByLocale(locale, 'Submitted At', '提交时间'),
+    approvedBy: copyByLocale(locale, 'Approval By', '审批人'),
+    approvedAt: copyByLocale(locale, 'Approval Time', '审批时间'),
+    currentRejectionReason: copyByLocale(locale, 'Current rejection reason', '当前驳回原因'),
+    decision: copyByLocale(locale, 'Decision', '审批决策'),
+    decisionHint: copyByLocale(locale, 'Approved orders will post inventory movement immediately in the current mock store.', '审批通过后会立即在当前 mock 数据中写入库存变动。'),
+    rejectionPlaceholder: copyByLocale(locale, 'Enter rejection reason', '填写驳回原因'),
+    reject: copyByLocale(locale, 'Reject', '驳回'),
+  };
+
+  const filteredQueue = useMemo(() => {
+    const normalizedSearch = deferredSearch.trim().toLowerCase();
+
+    return queue.filter((item) => {
+      const matchesSearch =
+        normalizedSearch.length === 0 ||
+        `${item.orderNo} ${item.partner} ${item.module} ${item.warehouseCode} ${item.createdBy}`.toLowerCase().includes(normalizedSearch);
+      const matchesFilter = filterValue === 'all' || item.approvalStatus === filterValue;
+
+      return matchesSearch && matchesFilter;
+    });
+  }, [deferredSearch, filterValue, queue]);
+
+  const selectedItem =
+    filteredQueue.find((item) => item.key === selections.approvalKey) ??
+    queue.find((item) => item.key === selections.approvalKey) ??
+    filteredQueue[0] ??
+    queue[0];
+
+  function approve(item: ops.ApprovalQueueItem) {
+    updateApprovalSelection(setSelections, item);
+    setStore((current) => ops.approveOrder(current, item.module === 'Inbound' ? 'inbound' : 'outbound', item.id, currentUser));
+  }
+
+  function rejectSelected() {
+    if (!selectedItem) {
+      return;
+    }
+
+    updateApprovalSelection(setSelections, selectedItem);
+    setStore((current) =>
+      ops.rejectOrder(current, selectedItem.module === 'Inbound' ? 'inbound' : 'outbound', selectedItem.id, rejectReason, currentUser),
+    );
+    setRejectReason('');
+  }
+
+  async function handleImport(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    const rows = await readSpreadsheetFile(file);
+    let workingStore = store;
+    let successCount = 0;
+    const errors: string[] = [];
+
+    rows.forEach((row, index) => {
+      const module = (row.Module ?? '').toLowerCase();
+      const orderNo = row['Order No'] ?? '';
+      const decision = (row.Decision ?? '').toLowerCase();
+      const reason = row.Reason ?? '';
+
+      const queueItem = ops.buildApprovalQueue(workingStore).find(
+        (item) => item.orderNo.toLowerCase() === orderNo.toLowerCase() && item.module.toLowerCase() === module,
+      );
+
+      if (!queueItem) {
+        errors.push(copyByLocale(locale, `Row ${index + 2}: matching approval record not found.`, `第 ${index + 2} 行：未找到匹配的审批记录。`));
+        return;
+      }
+
+      if (decision === 'approve' || decision === 'approved') {
+        workingStore = ops.approveOrder(workingStore, queueItem.module === 'Inbound' ? 'inbound' : 'outbound', queueItem.id, currentUser);
+        successCount += 1;
+        return;
+      }
+
+      if (decision === 'reject' || decision === 'rejected') {
+        workingStore = ops.rejectOrder(workingStore, queueItem.module === 'Inbound' ? 'inbound' : 'outbound', queueItem.id, reason, currentUser);
+        successCount += 1;
+        return;
+      }
+
+      errors.push(copyByLocale(locale, `Row ${index + 2}: Decision must be approve or reject.`, `第 ${index + 2} 行：审批结果必须为通过或驳回。`));
+    });
+
+    if (successCount > 0) {
+      setStore(workingStore);
+    }
+
+    setFeedback({
+      tone: errors.length > 0 ? 'error' : 'success',
+      title: errors.length > 0 ? copyByLocale(locale, 'Approval import completed with issues', '审批导入完成，但存在问题') : copyByLocale(locale, 'Approval import completed', '审批导入完成'),
+      detail: copyByLocale(
+        locale,
+        `${successCount} approval rows processed.${errors.length ? ` ${errors.length} rows need review.` : ''}`,
+        `已处理 ${successCount} 条审批记录。${errors.length ? `仍有 ${errors.length} 行需要检查。` : ''}`,
+      ),
+      errors,
+    });
+
+    event.target.value = '';
+  }
+
+  function handleExport() {
+    downloadWorkbook(createSheetFileName('approval-export'), 'Approval Queue', filteredQueue.map((item) => ({
+      Module: item.module,
+      'Order No': item.orderNo,
+      Warehouse: item.warehouseCode,
+      Partner: item.partner,
+      Units: item.units,
+      'Order Status': item.orderStatus,
+      Approval: item.approvalStatus,
+      'Submitted By': item.createdBy,
+      'Submitted At': item.createdAt,
+      'Approved By': item.approvedBy,
+      'Approval Time': item.approvalUpdatedAt,
+      Reason: item.approvalReason,
+    })));
+  }
+
+  function handleTemplate() {
+    downloadWorkbook(createSheetFileName('approval-template'), 'Approval Template', [
+      {
+        Module: 'Inbound',
+        'Order No': 'INB-1048',
+        Decision: 'Approve',
+        Reason: '',
+      },
+    ]);
+  }
+
+  return (
+    <>
+      <input ref={inputRef} className="hidden-input" type="file" accept=".xlsx,.xls,.csv" onChange={handleImport} />
+
+      <ImportFeedbackBanner feedback={feedback} locale={locale} onClose={() => setFeedback(null)} />
+
+      <AdminToolbar
+        search={search}
+        onSearchChange={setSearch}
+        searchPlaceholder={text.searchPlaceholder}
+        filterValue={filterValue}
+        onFilterChange={setFilterValue}
+        filterOptions={[
+          { value: 'all', label: text.allApprovals },
+          { value: 'Pending Approval', label: text.pendingApproval },
+          { value: 'Approved', label: text.approved },
+          { value: 'Rejected', label: text.rejected },
+        ]}
+        onImport={() => inputRef.current?.click()}
+        onTemplate={handleTemplate}
+        onExport={handleExport}
+        onNew={() => onNavigate('inbound-create')}
+        locale={locale}
+        newLabel={text.newInbound}
+      />
+
+      <section className="admin-panel">
+        <div className="admin-panel__header">
+          <div>
+            <p className="section-kicker">{text.queueKicker}</p>
+            <h2>{text.queueTitle}</h2>
+          </div>
+
+          <div className="admin-toolbar__actions">
+            <span className="admin-inline-note">{formatRecordCount(locale, filteredQueue.length)}</span>
+          </div>
+        </div>
+
+        <div className="table-wrap">
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>{text.module}</th>
+                <th>{text.orderNo}</th>
+                <th>{text.warehouse}</th>
+                <th>{text.partner}</th>
+                <th>{text.units}</th>
+                <th>{text.orderStatus}</th>
+                <th>{text.approval}</th>
+                <th>{text.action}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredQueue.map((item) => (
+                <tr key={item.key}>
+                  <td>{getLocalizedModule(locale, item.module)}</td>
+                  <td>{item.orderNo}</td>
+                  <td>{item.warehouseCode}</td>
+                  <td>{item.partner}</td>
+                  <td>{item.units}</td>
+                  <td>
+                    <StatusChip label={item.orderStatus} locale={locale} />
+                  </td>
+                  <td>
+                    <StatusChip label={item.approvalStatus} locale={locale} tone={getApprovalChipTone(item.approvalStatus)} />
+                  </td>
+                  <td>
+                    <div className="table-actions">
+                      <button
+                        className="table-action"
+                        type="button"
+                        onClick={() => {
+                          updateApprovalSelection(setSelections, item);
+                          onNavigate(item.module === 'Inbound' ? 'inbound-detail' : 'outbound-detail');
+                        }}
+                      >
+                        {text.view}
+                      </button>
+                      {item.approvalStatus === 'Pending Approval' ? (
+                        <button className="table-action table-action--primary" type="button" onClick={() => approve(item)}>
+                          {text.approve}
+                        </button>
+                      ) : null}
+                      <button
+                        className="table-action"
+                        type="button"
+                        onClick={() => {
+                          updateApprovalSelection(setSelections, item);
+                          setRejectReason(item.approvalReason);
+                        }}
+                      >
+                        {text.review}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {filteredQueue.length === 0 ? <p className="empty-note">{text.emptyList}</p> : null}
+      </section>
+
+      {selectedItem ? (
+        <section className="admin-panel">
+          <div className="admin-panel__header">
+            <div>
+              <p className="section-kicker">{text.selectedApproval}</p>
+              <h2>{selectedItem.orderNo}</h2>
+            </div>
+
+            <div className="admin-toolbar__actions">
+              <StatusChip label={selectedItem.approvalStatus} locale={locale} tone={getApprovalChipTone(selectedItem.approvalStatus)} />
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => onNavigate(selectedItem.module === 'Inbound' ? 'inbound-detail' : 'outbound-detail')}
+              >
+                {text.openDetail}
+              </button>
+            </div>
+          </div>
+
+          <DetailGrid
+            items={[
+              { label: text.module, value: getLocalizedModule(locale, selectedItem.module) },
+              { label: text.warehouse, value: selectedItem.warehouseName },
+              { label: text.partner, value: selectedItem.partner },
+              { label: text.units, value: String(selectedItem.units) },
+              { label: text.submittedBy, value: selectedItem.createdBy },
+              { label: text.submittedAt, value: ops.formatShortStamp(selectedItem.createdAt, getLocaleTag(locale)) },
+              { label: text.approvedBy, value: selectedItem.approvedBy || '--' },
+              { label: text.approvedAt, value: selectedItem.approvalUpdatedAt ? ops.formatShortStamp(selectedItem.approvalUpdatedAt, getLocaleTag(locale)) : '--' },
+            ]}
+          />
+
+          {selectedItem.approvalReason ? (
+            <div className="admin-note-block admin-note-block--warning">
+              <strong>{text.currentRejectionReason}</strong>
+              <p>{selectedItem.approvalReason}</p>
+            </div>
+          ) : null}
+
+          <div className="approval-decision-panel">
+            <div className="approval-decision-panel__copy">
+              <strong>{text.decision}</strong>
+              <p>{text.decisionHint}</p>
+            </div>
+
+            <textarea
+              className="admin-textarea"
+              rows={3}
+              value={rejectReason}
+              placeholder={text.rejectionPlaceholder}
+              onChange={(event) => setRejectReason(event.target.value)}
+            />
+
+            <div className="admin-toolbar__actions">
+              <button className="secondary-button" type="button" onClick={rejectSelected}>
+                {text.reject}
+              </button>
+              <button className="primary-button" type="button" onClick={() => approve(selectedItem)}>
+                {text.approve}
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+    </>
+  );
+}
+
+function UserManagementWorkspace({ store, setStore, selections, setSelections, locale, currentUser }: OperationalModuleViewProps) {
+  const [search, setSearch] = useState('');
+  const [filterValue, setFilterValue] = useState('all');
+  const [feedback, setFeedback] = useState<ImportFeedback | null>(null);
+  const deferredSearch = useDeferredValue(search);
+  const adminCount = store.users.filter((user) => user.role === 'Admin').length;
+  const text = {
+    searchPlaceholder: copyByLocale(locale, 'Search name or email', '搜索姓名或邮箱'),
+    allRoles: copyByLocale(locale, 'All roles', '全部角色'),
+    admin: copyByLocale(locale, 'Admin', '管理员'),
+    staff: copyByLocale(locale, 'Staff', '员工'),
+    inviteStaff: copyByLocale(locale, 'Invite Staff', '邀请员工'),
+    export: copyByLocale(locale, 'Export', '导出'),
+    usersKicker: copyByLocale(locale, 'Access control', '权限控制'),
+    usersTitle: copyByLocale(locale, 'User Management', '用户管理'),
+    name: copyByLocale(locale, 'Name', '姓名'),
+    email: copyByLocale(locale, 'Email', '邮箱'),
+    role: copyByLocale(locale, 'Role', '角色'),
+    status: copyByLocale(locale, 'Status', '状态'),
+    lastLogin: copyByLocale(locale, 'Last Login', '最近登录'),
+    action: copyByLocale(locale, 'Action', '操作'),
+    view: copyByLocale(locale, 'View', '查看'),
+    makeAdmin: copyByLocale(locale, 'Make Admin', '设为管理员'),
+    makeStaff: copyByLocale(locale, 'Set Staff', '设为员工'),
+    selectedUser: copyByLocale(locale, 'Selected user', '当前用户'),
+    appointedBy: copyByLocale(locale, 'Appointed By', '任命人'),
+    appointedAt: copyByLocale(locale, 'Appointed At', '任命时间'),
+    permissionsUpdatedAt: copyByLocale(locale, 'Permission Updated', '权限更新时间'),
+    roleSummary: copyByLocale(
+      locale,
+      'Admins can approve orders, manage user roles, and appoint other administrators. Staff can view and edit operational data only.',
+      '管理员可审批订单、管理用户角色并任命其他管理员；员工仅可查看和编辑业务数据。',
+    ),
+    selfGuard: copyByLocale(locale, 'The last admin cannot remove their own admin access.', '最后一位管理员不能移除自己的管理员权限。'),
+    emptyList: copyByLocale(locale, 'No users matched the current filters.', '当前筛选条件下没有匹配的用户。'),
+    inviteSuccess: copyByLocale(locale, 'Staff account created', '员工账号已创建'),
+    inviteDetail: copyByLocale(locale, 'A new staff profile was added to the mock workspace.', '新的员工账号已添加到当前 mock 工作区。'),
+    roleUpdated: copyByLocale(locale, 'Role updated', '角色已更新'),
+    roleUpdatedDetail: copyByLocale(locale, 'User permissions were updated in the mock workspace.', '当前 mock 工作区中的用户权限已更新。'),
+  };
+
+  const filteredUsers = useMemo(() => {
+    const normalizedSearch = deferredSearch.trim().toLowerCase();
+
+    return store.users.filter((user) => {
+      const matchesSearch = normalizedSearch.length === 0 || `${user.name} ${user.email}`.toLowerCase().includes(normalizedSearch);
+      const matchesRole = filterValue === 'all' || user.role === filterValue;
+      return matchesSearch && matchesRole;
+    });
+  }, [deferredSearch, filterValue, store.users]);
+
+  const selectedUser =
+    filteredUsers.find((user) => user.id === selections.userId) ??
+    store.users.find((user) => user.id === selections.userId) ??
+    filteredUsers[0] ??
+    store.users[0];
+
+  function selectUser(userId: string) {
+    setSelections((current) => ({ ...current, userId }));
+  }
+
+  function inviteStaff() {
+    const nextIndex = store.users.length + 1;
+    const result = ops.registerWorkspaceUser(
+      store,
+      {
+        email: `staff${nextIndex}@northline.com`,
+        name: locale === 'zh' ? `新员工 ${nextIndex}` : `Team Member ${nextIndex}`,
+      },
+      currentUser,
+    );
+
+    setStore(result.store);
+    selectUser(result.user.id);
+    setFeedback({
+      tone: 'success',
+      title: text.inviteSuccess,
+      detail: text.inviteDetail,
+    });
+  }
+
+  function exportUsers() {
+    downloadWorkbook(
+      createSheetFileName('users-export'),
+      'Users',
+      filteredUsers.map((user) => ({
+        Name: user.name,
+        Email: user.email,
+        Role: user.role,
+        Status: user.status,
+        'Appointed By': user.appointedBy,
+        'Appointed At': user.appointedAt,
+        'Permission Updated': user.permissionsUpdatedAt,
+        'Last Login': user.lastLoginAt,
+      })),
+    );
+  }
+
+  function changeRole(user: ops.WorkspaceUser, nextRole: ops.UserRole) {
+    const nextStore = ops.updateUserRole(store, user.id, nextRole, currentUser);
+
+    if (nextStore === store) {
+      setFeedback({
+        tone: 'error',
+        title: text.role,
+        detail: text.selfGuard,
+      });
+      return;
+    }
+
+    setStore(nextStore);
+    selectUser(user.id);
+    setFeedback({
+      tone: 'success',
+      title: text.roleUpdated,
+      detail: text.roleUpdatedDetail,
+    });
+  }
+
+  return (
+    <>
+      <ImportFeedbackBanner feedback={feedback} locale={locale} onClose={() => setFeedback(null)} />
+
+      <section className="admin-toolbar">
+        <div className="admin-toolbar__filters">
+          <input
+            className="admin-input"
+            type="search"
+            value={search}
+            placeholder={text.searchPlaceholder}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+
+          <select className="admin-select" value={filterValue} onChange={(event) => setFilterValue(event.target.value)}>
+            <option value="all">{text.allRoles}</option>
+            <option value="Admin">{text.admin}</option>
+            <option value="Staff">{text.staff}</option>
+          </select>
+        </div>
+
+        <div className="admin-toolbar__actions">
+          <button className="secondary-button" type="button" onClick={exportUsers}>
+            {text.export}
+          </button>
+          <button className="primary-button" type="button" onClick={inviteStaff}>
+            {text.inviteStaff}
+          </button>
         </div>
       </section>
-    </aside>
-  );
-}
 
-function SelectionPreview({ title, detail, tone }: { title: string; detail: string; tone: string }) {
-  return (
-    <div className="preview-card">
-      <div className="preview-card__top">
-        <p>{title}</p>
-        <StatusPill value={tone === 'positive' ? 'Ready' : tone === 'warning' ? 'Attention' : tone === 'muted' ? 'Draft' : 'Active'} />
-      </div>
-      <p>{detail}</p>
-    </div>
-  );
-}
-
-function PreviewStat({ label, value, tone }: { label: string; value: string; tone?: string }) {
-  return (
-    <div className="preview-stat">
-      <span>{label}</span>
-      {tone ? <StatusPill value={value} toneOverride={tone} /> : <strong>{value}</strong>}
-    </div>
-  );
-}
-
-function StatusPill({ value, toneOverride }: { value: string; toneOverride?: string }) {
-  const tone = toneOverride ?? ops.getStatusTone(value);
-
-  return <span className={`status-pill status-pill--${tone}`}>{value}</span>;
-}
-
-function FormSection({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
-  return (
-    <section className="form-section">
-      <div className="section-heading section-heading--stack">
-        <div>
-          <p className="section-kicker">{title}</p>
-          <h2>{title}</h2>
-        </div>
-        {description ? <p className="section-copy">{description}</p> : null}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function FieldShell({
-  label,
-  required,
-  error,
-  hint,
-  htmlFor,
-  children,
-}: {
-  label: string;
-  required?: boolean;
-  error?: string;
-  hint?: string;
-  htmlFor: string;
-  children: ReactNode;
-}) {
-  return (
-    <label className="field field--rich" htmlFor={htmlFor}>
-      <span className="field__label">
-        {label}
-        {required ? <em>Required</em> : null}
-      </span>
-      {children}
-      {error ? <span className="field__error">{error}</span> : hint ? <span className="field__hint">{hint}</span> : null}
-    </label>
-  );
-}
-
-function TextField({
-  label,
-  value,
-  onChange,
-  placeholder,
-  required,
-  error,
-  onBlur,
-  type = 'text',
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder: string;
-  required?: boolean;
-  error?: string;
-  onBlur?: () => void;
-  type?: 'text' | 'date';
-}) {
-  const id = useId();
-
-  return (
-    <FieldShell label={label} required={required} error={error} htmlFor={id}>
-      <input id={id} type={type} value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} onBlur={onBlur} />
-    </FieldShell>
-  );
-}
-
-function TextAreaField({
-  label,
-  value,
-  onChange,
-  placeholder,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder: string;
-}) {
-  const id = useId();
-
-  return (
-    <FieldShell label={label} htmlFor={id}>
-      <textarea id={id} value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} rows={5} />
-    </FieldShell>
-  );
-}
-
-function SelectField({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: readonly string[];
-  onChange: (value: string) => void;
-}) {
-  const id = useId();
-
-  return (
-    <FieldShell label={label} htmlFor={id}>
-      <select id={id} value={value} onChange={(event) => onChange(event.target.value)}>
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    </FieldShell>
-  );
-}
-
-function ReadonlyField({ label, value }: { label: string; value: string }) {
-  const id = useId();
-
-  return (
-    <FieldShell label={label} htmlFor={id}>
-      <input id={id} value={value} readOnly />
-    </FieldShell>
-  );
-}
-
-function SearchSelectField({
-  label,
-  value,
-  options,
-  onChange,
-  placeholder,
-  required,
-  error,
-  onBlur,
-}: {
-  label: string;
-  value: string;
-  options: SearchOption[];
-  onChange: (value: string) => void;
-  placeholder: string;
-  required?: boolean;
-  error?: string;
-  onBlur?: () => void;
-}) {
-  const id = useId();
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const selectedOption = options.find((option) => option.value === value);
-  const [query, setQuery] = useState(selectedOption?.label ?? '');
-  const [open, setOpen] = useState(false);
-  const deferredQuery = useDeferredValue(query);
-
-  useEffect(() => {
-    const handlePointerDown = (event: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handlePointerDown);
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-    };
-  }, []);
-
-  const normalizedQuery = deferredQuery.trim().toLowerCase();
-  const filteredOptions = normalizedQuery
-    ? options.filter((option) => `${option.label} ${option.detail} ${option.keywords}`.toLowerCase().includes(normalizedQuery))
-    : options;
-
-  return (
-    <FieldShell label={label} required={required} error={error} htmlFor={id}>
-      <div ref={rootRef} className={`search-select ${open ? 'is-open' : ''}`}>
-        <input
-          id={id}
-          value={open ? query : selectedOption?.label ?? query}
-          placeholder={placeholder}
-          autoComplete="off"
-          onFocus={() => {
-            setQuery(selectedOption?.label ?? '');
-            setOpen(true);
-          }}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setOpen(true);
-          }}
-          onBlur={onBlur}
-        />
-        <button
-          className="search-select__toggle"
-          type="button"
-          onClick={() => {
-            setOpen((current) => !current);
-          }}
-        >
-          Browse
-        </button>
-
-        {open ? (
-          <div className="search-select__panel">
-            {filteredOptions.length > 0 ? (
-              filteredOptions.map((option) => (
-                <button
-                  key={option.value}
-                  className={`search-select__option ${value === option.value ? 'is-active' : ''}`}
-                  type="button"
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                  }}
-                  onClick={() => {
-                    onChange(option.value);
-                    setQuery(option.label);
-                    setOpen(false);
-                  }}
-                >
-                  <strong>{option.label}</strong>
-                  <span>{option.detail}</span>
-                </button>
-              ))
-            ) : (
-              <div className="search-select__empty">No matches found.</div>
-            )}
+      <section className="admin-panel">
+        <div className="admin-panel__header">
+          <div>
+            <p className="section-kicker">{text.usersKicker}</p>
+            <h2>{text.usersTitle}</h2>
           </div>
-        ) : null}
-      </div>
-    </FieldShell>
-  );
-}
 
-function LineItemsEditor({
-  lineItems,
-  productOptions,
-  store,
-  touched,
-  submitCount,
-  errors,
-  onAddLineItem,
-  onRemoveLineItem,
-  onLineItemChange,
-  setTouched,
-}: {
-  lineItems: OrderLineItem[];
-  productOptions: SearchOption[];
-  store: WorkspaceStore;
-  touched: TouchedMap;
-  submitCount: number;
-  errors: ErrorMap;
-  onAddLineItem: () => void;
-  onRemoveLineItem: (index: number) => void;
-  onLineItemChange: (index: number, patch: Partial<OrderLineItem>) => void;
-  setTouched: Dispatch<SetStateAction<TouchedMap>>;
-}) {
-  return (
-    <div className="line-items">
-      <div className="line-items__header">
-        <div>
-          <p className="section-kicker">Order lines</p>
-          <h3>Product lines</h3>
+          <div className="admin-toolbar__actions">
+            <span className="admin-inline-note">{formatRecordCount(locale, filteredUsers.length)}</span>
+          </div>
         </div>
-        <button className="secondary-button secondary-button--compact" type="button" onClick={onAddLineItem}>
-          Add Line
-        </button>
-      </div>
 
-      {errors.lineItems && submitCount > 0 ? <p className="line-items__error">{errors.lineItems}</p> : null}
+        <div className="table-wrap">
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>{text.name}</th>
+                <th>{text.email}</th>
+                <th>{text.role}</th>
+                <th>{text.status}</th>
+                <th>{text.lastLogin}</th>
+                <th>{text.action}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredUsers.map((user) => (
+                <tr key={user.id}>
+                  <td>{user.name}</td>
+                  <td>{user.email}</td>
+                  <td>
+                    <span className={`status-chip ${user.role === 'Admin' ? 'status-chip--info' : 'status-chip--muted'}`}>
+                      {getLocalizedRole(locale, user.role)}
+                    </span>
+                  </td>
+                  <td>
+                    <StatusChip label={user.status} locale={locale} tone={user.status === 'Active' ? 'positive' : 'muted'} />
+                  </td>
+                  <td>{ops.formatShortStamp(user.lastLoginAt, getLocaleTag(locale))}</td>
+                  <td>
+                    <div className="table-actions">
+                      <button className="table-action" type="button" onClick={() => selectUser(user.id)}>
+                        {text.view}
+                      </button>
+                      {user.role === 'Staff' ? (
+                        <button className="table-action table-action--primary" type="button" onClick={() => changeRole(user, 'Admin')}>
+                          {text.makeAdmin}
+                        </button>
+                      ) : user.id !== currentUser.id || adminCount > 1 ? (
+                        <button className="table-action" type="button" onClick={() => changeRole(user, 'Staff')}>
+                          {text.makeStaff}
+                        </button>
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
 
-      <div className="line-items__rows">
-        {lineItems.map((lineItem, index) => {
-          const preview = ops.buildPreviewFields(store, lineItem);
+        {filteredUsers.length === 0 ? <p className="empty-note">{text.emptyList}</p> : null}
+      </section>
 
-          return (
-            <section className="line-item-row" key={lineItem.id}>
-              <div className="line-item-row__header">
-                <div>
-                  <p className="section-kicker">Line {index + 1}</p>
-                  <h3>{preview.productName || 'Select product'}</h3>
-                </div>
-                <button
-                  className="table-action-link"
-                  type="button"
-                  disabled={lineItems.length === 1}
-                  onClick={() => onRemoveLineItem(index)}
-                >
-                  Remove
-                </button>
-              </div>
+      {selectedUser ? (
+        <section className="admin-panel">
+          <div className="admin-panel__header">
+            <div>
+              <p className="section-kicker">{text.selectedUser}</p>
+              <h2>{selectedUser.name}</h2>
+            </div>
 
-              <div className="form-section__grid form-section__grid--line">
-                <SearchSelectField
-                  label="Product"
-                  value={lineItem.productId}
-                  options={productOptions}
-                  onChange={(value) => onLineItemChange(index, { productId: value })}
-                  onBlur={() => setTouchedFlag(`lineItems.${index}.productId`, setTouched)}
-                  placeholder="Search product"
-                  required
-                  error={getVisibleError(`lineItems.${index}.productId`, errors, touched, submitCount)}
-                />
-                <ReadonlyField label="Product code" value={preview.productCode || 'Auto'} />
-                <TextField
-                  label="Quantity"
-                  value={lineItem.quantity}
-                  onChange={(value) => onLineItemChange(index, { quantity: value })}
-                  onBlur={() => setTouchedFlag(`lineItems.${index}.quantity`, setTouched)}
-                  placeholder="Enter quantity"
-                  required
-                  error={getVisibleError(`lineItems.${index}.quantity`, errors, touched, submitCount)}
-                />
-                <ReadonlyField label="Unit" value={preview.unit || 'Auto'} />
-              </div>
+            <div className="admin-toolbar__actions">
+              <span className={`status-chip ${selectedUser.role === 'Admin' ? 'status-chip--info' : 'status-chip--muted'}`}>
+                {getLocalizedRole(locale, selectedUser.role)}
+              </span>
+              <StatusChip label={selectedUser.status} locale={locale} tone={selectedUser.status === 'Active' ? 'positive' : 'muted'} />
+            </div>
+          </div>
 
-              <TextAreaField
-                label="Line notes"
-                value={lineItem.notes}
-                onChange={(value) => onLineItemChange(index, { notes: value })}
-                placeholder="Add line-specific handling notes"
-              />
-            </section>
-          );
-        })}
-      </div>
-    </div>
+          <DetailGrid
+            items={[
+              { label: text.name, value: selectedUser.name },
+              { label: text.email, value: selectedUser.email },
+              { label: text.role, value: getLocalizedRole(locale, selectedUser.role) },
+              { label: text.status, value: getLocalizedStatus(locale, selectedUser.status) },
+              { label: text.appointedBy, value: selectedUser.appointedBy },
+              { label: text.appointedAt, value: ops.formatShortStamp(selectedUser.appointedAt, getLocaleTag(locale)) },
+              { label: text.permissionsUpdatedAt, value: ops.formatShortStamp(selectedUser.permissionsUpdatedAt, getLocaleTag(locale)) },
+              { label: text.lastLogin, value: ops.formatShortStamp(selectedUser.lastLoginAt, getLocaleTag(locale)) },
+            ]}
+          />
+
+          <div className="admin-note-block">
+            <strong>{text.role}</strong>
+            <p>{text.roleSummary}</p>
+          </div>
+
+          {selectedUser.role === 'Admin' && selectedUser.id === currentUser.id && adminCount <= 1 ? (
+            <div className="admin-inline-note">{text.selfGuard}</div>
+          ) : null}
+        </section>
+      ) : null}
+    </>
   );
 }

@@ -11,6 +11,8 @@ import {
 import { init, use as registerEChartsModules, type ComposeOption, type EChartsType } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import type { WarehouseTrendPoint } from './dashboardMock';
+import type { AuthLocale } from './content';
+import { getLocaleTag } from './content';
 
 registerEChartsModules([CanvasRenderer, GridComponent, LegendComponent, TooltipComponent, LineChart]);
 
@@ -20,13 +22,14 @@ type TrendChartOption = ComposeOption<
 
 type WarehouseTrendChartProps = {
   data: WarehouseTrendPoint[];
+  locale: AuthLocale;
 };
 
-function formatQuantity(value: number) {
-  return new Intl.NumberFormat('en-US').format(value);
+function formatQuantity(value: number, locale: AuthLocale) {
+  return new Intl.NumberFormat(getLocaleTag(locale)).format(value);
 }
 
-export default function WarehouseTrendChart({ data }: WarehouseTrendChartProps) {
+export default function WarehouseTrendChart({ data, locale }: WarehouseTrendChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<EChartsType | null>(null);
 
@@ -67,67 +70,74 @@ export default function WarehouseTrendChart({ data }: WarehouseTrendChartProps) 
     }
 
     const option: TrendChartOption = {
-      animationDuration: 420,
-      animationDurationUpdate: 280,
-      color: ['#67e1b9', '#8fb8ff'],
+      animationDuration: 320,
+      animationDurationUpdate: 220,
+      color: ['#2563eb', '#0f766e'],
       grid: {
-        top: 54,
+        top: 48,
         right: 20,
-        bottom: 28,
-        left: 52,
+        bottom: 34,
+        left: 56,
       },
       legend: {
         top: 0,
         icon: 'roundRect',
-        itemWidth: 14,
+        itemWidth: 12,
         itemHeight: 8,
         textStyle: {
-          color: '#8ca2b4',
-          fontFamily: 'Space Grotesk, Segoe UI, sans-serif',
+          color: '#475569',
+          fontFamily: 'IBM Plex Sans, Segoe UI, sans-serif',
+          fontSize: 12,
         },
       },
       tooltip: {
         trigger: 'axis',
-        backgroundColor: 'rgba(7, 14, 19, 0.96)',
-        borderColor: 'rgba(140, 162, 180, 0.24)',
+        backgroundColor: '#ffffff',
+        borderColor: '#dbe2ea',
+        borderWidth: 1,
         textStyle: {
-          color: '#edf5fb',
-          fontFamily: 'Space Grotesk, Segoe UI, sans-serif',
+          color: '#0f172a',
+          fontFamily: 'IBM Plex Sans, Segoe UI, sans-serif',
         },
         valueFormatter: (value) => {
           if (typeof value !== 'number') {
             return `${value}`;
           }
 
-          return `${formatQuantity(value)} units`;
+          return locale === 'zh' ? `${formatQuantity(value, locale)} 件` : `${formatQuantity(value, locale)} units`;
         },
       },
       xAxis: {
         type: 'category',
         boundaryGap: false,
-        data: data.map((point) => point.label),
+        data: data.map((point) =>
+          new Intl.DateTimeFormat(getLocaleTag(locale), {
+            month: 'short',
+            day: 'numeric',
+          }).format(new Date(point.isoDate)),
+        ),
         axisTick: {
           show: false,
         },
         axisLine: {
           lineStyle: {
-            color: 'rgba(140, 162, 180, 0.26)',
+            color: '#dbe2ea',
           },
         },
         axisLabel: {
-          color: '#8ca2b4',
-          margin: 14,
+          color: '#64748b',
+          margin: 12,
           fontSize: 12,
         },
       },
       yAxis: {
         type: 'value',
-        name: 'Quantity',
-        nameGap: 22,
+        name: locale === 'zh' ? '数量' : 'Quantity',
+        nameGap: 18,
         nameTextStyle: {
-          color: '#8ca2b4',
+          color: '#64748b',
           fontSize: 12,
-          fontFamily: 'IBM Plex Mono, SFMono-Regular, monospace',
+          fontFamily: 'IBM Plex Sans, Segoe UI, sans-serif',
         },
         axisLine: {
           show: false,
@@ -136,52 +146,64 @@ export default function WarehouseTrendChart({ data }: WarehouseTrendChartProps) 
           show: false,
         },
         axisLabel: {
-          color: '#8ca2b4',
-          formatter: (value: number) => formatQuantity(value),
+          color: '#64748b',
+          formatter: (value: number) => formatQuantity(value, locale),
         },
         splitLine: {
           lineStyle: {
-            color: 'rgba(140, 162, 180, 0.16)',
-            type: 'dashed',
+            color: '#e7edf3',
           },
         },
       },
       series: [
         {
-          name: 'Inbound',
+          name: locale === 'zh' ? '入库' : 'Inbound',
           type: 'line',
           smooth: 0.2,
           symbol: 'circle',
-          symbolSize: 8,
+          symbolSize: 7,
           data: data.map((point) => point.inbound),
           lineStyle: {
             width: 3,
           },
           itemStyle: {
             borderWidth: 2,
-            borderColor: '#041015',
+            borderColor: '#ffffff',
+          },
+          areaStyle: {
+            color: 'rgba(37, 99, 235, 0.08)',
           },
         },
         {
-          name: 'Outbound',
+          name: locale === 'zh' ? '出库' : 'Outbound',
           type: 'line',
           smooth: 0.2,
           symbol: 'circle',
-          symbolSize: 8,
+          symbolSize: 7,
           data: data.map((point) => point.outbound),
           lineStyle: {
             width: 3,
           },
           itemStyle: {
             borderWidth: 2,
-            borderColor: '#041015',
+            borderColor: '#ffffff',
+          },
+          areaStyle: {
+            color: 'rgba(15, 118, 110, 0.08)',
           },
         },
       ],
     };
 
     chartRef.current.setOption(option, true);
-  }, [data]);
+  }, [data, locale]);
 
-  return <div className="dashboard-chart" ref={containerRef} role="img" aria-label="Seven-day inbound and outbound trend chart" />;
+  return (
+    <div
+      className="dashboard-chart"
+      ref={containerRef}
+      role="img"
+      aria-label={locale === 'zh' ? '近七天入库与出库趋势图' : 'Seven-day inbound and outbound trend chart'}
+    />
+  );
 }

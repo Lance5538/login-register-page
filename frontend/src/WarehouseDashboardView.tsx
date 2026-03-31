@@ -1,33 +1,30 @@
-import { Suspense, lazy, startTransition, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import type { DashboardPage, Route } from './content';
-import {
-  DASHBOARD_REFRESH_INTERVAL_MS,
-  dashboardMetricCards,
-  getDashboardMockSnapshot,
-  type InventoryCategoryShare,
-  type InventoryWarning,
-  type WarehouseDashboardSnapshot,
-  type WarehouseTrendPoint,
-} from './dashboardMock';
+import { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useState } from 'react';
+import type { AuthLocale, DashboardPage, Route } from './content';
+import { getLocaleTag } from './content';
+import { DASHBOARD_REFRESH_INTERVAL_MS, dashboardMetricCards, type InventoryCategoryShare, type InventoryWarning, type WarehouseTrendPoint } from './dashboardMock';
+import { buildApprovalQueue, buildDashboardSnapshot, countOrderUnits, formatShortStamp, type WorkspaceStore } from './operations';
 
 const WarehouseTrendChart = lazy(() => import('./WarehouseTrendChart'));
 const WarehouseCategoryChart = lazy(() => import('./WarehouseCategoryChart'));
 
 type WarehouseDashboardViewProps = {
   page: DashboardPage;
+  store: WorkspaceStore;
+  locale: AuthLocale;
   onNavigate: (route: Route) => void;
+  canReviewApprovals: boolean;
 };
 
-function formatMetricValue(format: 'integer' | 'percent', value: number) {
+function formatMetricValue(locale: AuthLocale, format: 'integer' | 'percent', value: number) {
   if (format === 'percent') {
     return `${value.toFixed(1)}%`;
   }
 
-  return new Intl.NumberFormat('en-US').format(value);
+  return new Intl.NumberFormat(getLocaleTag(locale)).format(value);
 }
 
-function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat('en-US', {
+function formatDateTime(value: string, locale: AuthLocale) {
+  return new Intl.DateTimeFormat(getLocaleTag(locale), {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
@@ -35,8 +32,8 @@ function formatDateTime(value: string) {
   }).format(new Date(value));
 }
 
-function formatInteger(value: number) {
-  return new Intl.NumberFormat('en-US').format(value);
+function formatInteger(value: number, locale: AuthLocale) {
+  return new Intl.NumberFormat(getLocaleTag(locale)).format(value);
 }
 
 function getTrendSummary(trend: WarehouseTrendPoint[]) {
@@ -51,7 +48,7 @@ function getTrendSummary(trend: WarehouseTrendPoint[]) {
 }
 
 function getWarningToneClass(warning: InventoryWarning) {
-  return warning.severity === 'critical' ? 'status-pill--critical' : 'status-pill--warning';
+  return warning.severity === 'critical' ? 'status-chip--danger' : 'status-chip--warning';
 }
 
 function getCategorySharePercentage(category: InventoryCategoryShare, total: number) {
@@ -62,24 +59,150 @@ function getCategorySharePercentage(category: InventoryCategoryShare, total: num
   return `${((category.value / total) * 100).toFixed(1)}%`;
 }
 
-function ChartLoadingState({ compact = false }: { compact?: boolean }) {
-  return (
-    <div className={`dashboard-chart dashboard-chart--loading ${compact ? 'dashboard-chart--compact' : ''}`} aria-hidden="true">
-      <div className={`dashboard-chart__placeholder ${compact ? 'dashboard-chart__placeholder--compact' : ''}`} />
-    </div>
-  );
+function isSameDay(left: string, right: string) {
+  const leftDate = new Date(left);
+  const rightDate = new Date(right);
+
+  return leftDate.getFullYear() === rightDate.getFullYear() && leftDate.getMonth() === rightDate.getMonth() && leftDate.getDate() === rightDate.getDate();
 }
 
-export default function WarehouseDashboardView({ page, onNavigate }: WarehouseDashboardViewProps) {
-  const refreshCycleRef = useRef(0);
-  const [snapshot, setSnapshot] = useState<WarehouseDashboardSnapshot>(() => getDashboardMockSnapshot(0, new Date()));
+function ChartLoadingState({ compact = false }: { compact?: boolean }) {
+  return <div className={`dashboard-chart-placeholder ${compact ? 'dashboard-chart-placeholder--compact' : ''}`} aria-hidden="true" />;
+}
+
+function getMetricLabel(locale: AuthLocale, key: keyof typeof dashboardMetricLabels.en) {
+  return dashboardMetricLabels[locale][key];
+}
+
+function getMetricComparison(locale: AuthLocale, key: keyof typeof dashboardMetricLabels.en, metricValue: number, previousValue: number, warningCount: number) {
+  if (key === 'totalInventoryQuantity') {
+    return locale === 'zh' ? `${warningCount} 条预警记录` : `${warningCount} warning records`;
+  }
+
+  if (key === 'warehouseSpaceUtilizationRate') {
+    return locale === 'zh' ? `${warningCount} 条库存预警` : `${warningCount} inventory warnings`;
+  }
+
+  const delta = metricValue - previousValue;
+  return locale === 'zh' ? `${delta >= 0 ? '+' : ''}${delta} 较前一日` : `${delta >= 0 ? '+' : ''}${delta} vs previous day`;
+}
+
+function getMetricHelper(locale: AuthLocale, key: keyof typeof dashboardMetricLabels.en) {
+  return dashboardMetricHelpers[locale][key];
+}
+
+const dashboardMetricLabels = {
+  en: {
+    totalInventoryQuantity: 'Total Inventory Quantity',
+    todayInboundQuantity: 'Today Inbound Quantity',
+    todayOutboundQuantity: 'Today Outbound Quantity',
+    warehouseSpaceUtilizationRate: 'Warehouse Space Utilization Rate',
+  },
+  zh: {
+    totalInventoryQuantity: '库存总量',
+    todayInboundQuantity: '今日入库量',
+    todayOutboundQuantity: '今日出库量',
+    warehouseSpaceUtilizationRate: '仓库空间利用率',
+  },
+} as const;
+
+const dashboardMetricHelpers = {
+  en: {
+    totalInventoryQuantity: 'Current on-hand quantity after approved receipts and shipments.',
+    todayInboundQuantity: 'Approved inbound quantity posted today.',
+    todayOutboundQuantity: 'Approved outbound quantity deducted today.',
+    warehouseSpaceUtilizationRate: 'Utilization is derived from total on-hand quantity versus site capacity.',
+  },
+  zh: {
+    totalInventoryQuantity: '基于已审批入库与出库后的当前在库数量。',
+    todayInboundQuantity: '今日已审批并入账的入库数量。',
+    todayOutboundQuantity: '今日已审批并扣减的出库数量。',
+    warehouseSpaceUtilizationRate: '基于当前库存总量与仓容上限计算。',
+  },
+} as const;
+
+const dashboardText = {
+  en: {
+    kpiAria: 'Warehouse KPI cards',
+    trendKicker: 'Trend',
+    trendTitle: 'Inbound and outbound movement',
+    lastChecked: 'Last checked',
+    refresh: 'Refresh',
+    dayInbound: '7-day inbound',
+    dayOutbound: '7-day outbound',
+    netFlow: 'Net flow',
+    lastStockSync: 'Last stock sync',
+    categoryKicker: 'Category share',
+    categoryTitle: 'Stock composition',
+    categoryDetails: 'Category share details',
+    units: 'units',
+    approvalsKicker: 'Approvals',
+    approvalsTitle: 'Queue snapshot',
+    pendingApproval: 'Pending approval',
+    pendingApprovalDetail: 'Orders waiting to post inventory movement.',
+    approvedQueue: 'Approved queue',
+    approvedQueueDetail: 'Orders already posted into stock movement.',
+    approvedUnits: 'Approved units',
+    approvedUnitsDetail: 'Approved receipt and shipment units across the mock workspace.',
+    noPendingApprovals: 'No pending approvals right now.',
+    recentApprovals: 'Recent approvals were synced into inventory in the current session.',
+    warningsKicker: 'Warnings',
+    warningsTitle: 'Inventory watchlist',
+    critical: 'critical',
+    total: 'total',
+    severity: 'Severity',
+    sku: 'SKU',
+    warehouse: 'Warehouse',
+    country: 'Country',
+    onHand: 'On Hand',
+    threshold: 'Threshold',
+    action: 'Action',
+  },
+  zh: {
+    kpiAria: '仓储 KPI 卡片',
+    trendKicker: '趋势',
+    trendTitle: '入库与出库趋势',
+    lastChecked: '最近检查',
+    refresh: '刷新',
+    dayInbound: '7日入库',
+    dayOutbound: '7日出库',
+    netFlow: '净流量',
+    lastStockSync: '库存最近同步',
+    categoryKicker: '分类占比',
+    categoryTitle: '库存构成',
+    categoryDetails: '分类占比明细',
+    units: '件',
+    approvalsKicker: '审批',
+    approvalsTitle: '审批概览',
+    pendingApproval: '待审批',
+    pendingApprovalDetail: '等待过账库存变动的订单。',
+    approvedQueue: '已通过队列',
+    approvedQueueDetail: '已经写入库存流转的订单。',
+    approvedUnits: '已通过数量',
+    approvedUnitsDetail: '当前 mock 工作区中已通过的收货与发货数量。',
+    noPendingApprovals: '当前没有待审批记录。',
+    recentApprovals: '本次会话中的最近审批已同步到库存。',
+    warningsKicker: '预警',
+    warningsTitle: '库存预警列表',
+    critical: '严重',
+    total: '总计',
+    severity: '严重程度',
+    sku: 'SKU',
+    warehouse: '仓库',
+    country: '国家',
+    onHand: '现有库存',
+    threshold: '阈值',
+    action: '建议动作',
+  },
+} as const;
+
+export default function WarehouseDashboardView({ page, store, locale, onNavigate, canReviewApprovals }: WarehouseDashboardViewProps) {
+  const [checkedAt, setCheckedAt] = useState(() => new Date());
+  const text = dashboardText[locale];
 
   const refreshSnapshot = useCallback(() => {
-    refreshCycleRef.current += 1;
-    const nextSnapshot = getDashboardMockSnapshot(refreshCycleRef.current, new Date());
-
     startTransition(() => {
-      setSnapshot(nextSnapshot);
+      setCheckedAt(new Date());
     });
   }, []);
 
@@ -93,203 +216,244 @@ export default function WarehouseDashboardView({ page, onNavigate }: WarehouseDa
     };
   }, [refreshSnapshot]);
 
+  const snapshot = useMemo(() => buildDashboardSnapshot(store, checkedAt), [store, checkedAt]);
   const trendSummary = getTrendSummary(snapshot.trend);
-  const criticalWarnings = snapshot.warnings.filter((warning) => warning.severity === 'critical').length;
-  const impactedCountries = new Set(snapshot.warnings.map((warning) => warning.country)).size;
-  const impactedWarehouses = new Set(snapshot.warnings.map((warning) => warning.warehouse)).size;
   const categoryShareTotal = snapshot.categoryShare.reduce((sum, category) => sum + category.value, 0);
+  const approvalQueue = useMemo(() => buildApprovalQueue(store), [store]);
+  const pendingApprovals = approvalQueue.filter((item) => item.approvalStatus === 'Pending Approval');
+  const approvedToday = approvalQueue.filter(
+    (item) => item.approvalStatus === 'Approved' && item.approvalUpdatedAt && isSameDay(item.approvalUpdatedAt, store.lastSync),
+  );
+  const warningPreview = snapshot.warnings.slice(0, 6);
+  const previousTrendPoint = snapshot.trend[snapshot.trend.length - 2] ?? snapshot.trend[0];
 
   return (
-    <>
-      <section className="dashboard-kpi-grid" aria-label="Warehouse KPI cards">
-        {dashboardMetricCards.map((card, index) => {
+    <div className="ops-dashboard">
+      <section className="ops-dashboard__kpis" aria-label={text.kpiAria}>
+        {dashboardMetricCards.map((card) => {
           const metric = snapshot.metrics[card.key];
+          const previousValue =
+            card.key === 'todayInboundQuantity'
+              ? previousTrendPoint.inbound
+              : card.key === 'todayOutboundQuantity'
+                ? previousTrendPoint.outbound
+                : metric.value;
 
           return (
-            <article className={`dashboard-kpi-card dashboard-kpi-card--${card.tone}`} key={card.key}>
-              <div className="dashboard-kpi-card__header">
-                <span className="dashboard-kpi-card__label">{card.label}</span>
-                <span className={`metric-badge metric-badge--${metric.trendTone}`}>{metric.comparison}</span>
+            <article className="admin-kpi-card" key={card.key}>
+              <div className="admin-kpi-card__header">
+                <span className="admin-kpi-card__label">{getMetricLabel(locale, card.key)}</span>
+                <span className={`status-chip status-chip--${metric.trendTone}`}>
+                  {getMetricComparison(locale, card.key, metric.value, previousValue, snapshot.warnings.length)}
+                </span>
               </div>
 
-              <strong className="dashboard-kpi-card__value">{formatMetricValue(card.format, metric.value)}</strong>
-              <p className="dashboard-kpi-card__helper">{metric.helper}</p>
-
-              {card.key === 'warehouseSpaceUtilizationRate' ? (
-                <div
-                  className="metric-meter"
-                  aria-hidden="true"
-                  style={{ '--metric-fill': `${Math.min(metric.value, 100)}%`, '--metric-delay': `${index * 60}ms` } as CSSProperties}
-                >
-                  <span />
-                </div>
-              ) : (
-                <div className="dashboard-kpi-card__accent" aria-hidden="true" style={{ '--metric-delay': `${index * 60}ms` } as CSSProperties} />
-              )}
+              <strong className="admin-kpi-card__value">{formatMetricValue(locale, card.format, metric.value)}</strong>
+              <p className="admin-kpi-card__detail">{getMetricHelper(locale, card.key)}</p>
             </article>
           );
         })}
       </section>
 
-      <section className="dashboard-main-grid">
-        <section className="page-panel dashboard-chart-panel">
-          <div className="section-heading dashboard-panel-heading">
+      <section className="admin-panel">
+        <div className="admin-panel__header">
+          <div>
+            <p className="section-kicker">{text.trendKicker}</p>
+            <h2>{text.trendTitle}</h2>
+          </div>
+
+          <div className="admin-toolbar__actions">
+            <div className="admin-sync-indicator">
+              <span>{text.lastChecked}</span>
+              <strong>{formatDateTime(checkedAt.toISOString(), locale)}</strong>
+            </div>
+
+            <button className="secondary-button" type="button" onClick={refreshSnapshot}>
+              {text.refresh}
+            </button>
+          </div>
+        </div>
+
+        <Suspense fallback={<ChartLoadingState />}>
+          <WarehouseTrendChart data={snapshot.trend} locale={locale} />
+        </Suspense>
+
+        <div className="admin-mini-grid">
+          <article className="admin-mini-card">
+            <span>{text.dayInbound}</span>
+            <strong>{formatInteger(trendSummary.totalInbound, locale)}</strong>
+          </article>
+
+          <article className="admin-mini-card">
+            <span>{text.dayOutbound}</span>
+            <strong>{formatInteger(trendSummary.totalOutbound, locale)}</strong>
+          </article>
+
+          <article className="admin-mini-card">
+            <span>{text.netFlow}</span>
+            <strong>{trendSummary.netFlow >= 0 ? '+' : ''}{formatInteger(trendSummary.netFlow, locale)}</strong>
+          </article>
+
+          <article className="admin-mini-card">
+            <span>{text.lastStockSync}</span>
+            <strong>{formatShortStamp(store.lastSync, getLocaleTag(locale))}</strong>
+          </article>
+        </div>
+
+        <div className="admin-toolbar__actions">
+          {page.actions.map((action) => (
+            <button
+              key={action.label}
+              className={action.tone === 'primary' ? 'primary-button' : 'secondary-button'}
+              type="button"
+              onClick={() => onNavigate(action.route)}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="dashboard-secondary-grid">
+        <section className="admin-panel">
+          <div className="admin-panel__header">
             <div>
-              <p className="section-kicker">7-day movement</p>
-              <h2>Inbound and outbound trend</h2>
-            </div>
-
-            <div className="dashboard-panel-actions">
-              <div className="dashboard-sync-chip">
-                <span className="hero-meta-block__label">Last sync</span>
-                <strong>{formatDateTime(snapshot.generatedAt)}</strong>
-                <span>{snapshot.feedLabel}</span>
-              </div>
-
-              <button className="secondary-button secondary-button--compact" type="button" onClick={refreshSnapshot}>
-                Refresh now
-              </button>
+              <p className="section-kicker">{text.categoryKicker}</p>
+              <h2>{text.categoryTitle}</h2>
             </div>
           </div>
 
-          <p className="section-copy">
-            Confirmed warehouse receipts and shipments for the last seven days, updated through the live mock polling cycle.
-          </p>
+          <div className="dashboard-share-layout">
+            <Suspense fallback={<ChartLoadingState compact />}>
+              <WarehouseCategoryChart data={snapshot.categoryShare} locale={locale} />
+            </Suspense>
 
-          <Suspense fallback={<ChartLoadingState />}>
-            <WarehouseTrendChart data={snapshot.trend} />
-          </Suspense>
-
-          <div className="dashboard-trend-summary" aria-label="Trend summary">
-            <article className="trend-summary-card">
-              <span>7-day inbound total</span>
-              <strong>{formatInteger(trendSummary.totalInbound)}</strong>
-              <p>All confirmed receipt quantity in the current rolling window.</p>
-            </article>
-
-            <article className="trend-summary-card">
-              <span>7-day outbound total</span>
-              <strong>{formatInteger(trendSummary.totalOutbound)}</strong>
-              <p>Orders completed through picking, packing, and shipment.</p>
-            </article>
-
-            <article className="trend-summary-card">
-              <span>7-day net flow</span>
-              <strong>{trendSummary.netFlow >= 0 ? '+' : ''}{formatInteger(trendSummary.netFlow)}</strong>
-              <p>Net stock movement from inbound minus outbound activity.</p>
-            </article>
-          </div>
-
-          <div className="button-row">
-            {page.actions.map((action) => (
-              <button
-                key={action.label}
-                className={action.tone === 'primary' ? 'primary-button' : 'secondary-button'}
-                type="button"
-                onClick={() => onNavigate(action.route)}
-                >
-                  {action.label}
-                </button>
+            <div className="compact-legend-list" aria-label={text.categoryDetails}>
+              {snapshot.categoryShare.map((category) => (
+                <article className="compact-legend-row" key={category.id}>
+                  <div className="compact-legend-row__label">
+                    <span className="compact-legend-row__swatch" aria-hidden="true" style={{ backgroundColor: category.color }} />
+                    <strong>{category.label}</strong>
+                  </div>
+                  <span>{getCategorySharePercentage(category, categoryShareTotal)}</span>
+                  <span>{formatInteger(category.value, locale)} {text.units}</span>
+                </article>
               ))}
+            </div>
           </div>
         </section>
-      </section>
 
-      <section className="page-panel dashboard-category-panel">
-        <div className="section-heading dashboard-panel-heading">
-          <div>
-            <p className="section-kicker">Inventory structure</p>
-            <h2>Category stock share</h2>
-          </div>
+        {canReviewApprovals ? (
+          <section className="admin-panel">
+            <div className="admin-panel__header">
+              <div>
+                <p className="section-kicker">{text.approvalsKicker}</p>
+                <h2>{text.approvalsTitle}</h2>
+              </div>
+            </div>
 
-          <p className="section-copy">Category mix across all active warehouse sites.</p>
-        </div>
-
-        <div className="dashboard-category-layout">
-          <Suspense fallback={<ChartLoadingState compact />}>
-            <WarehouseCategoryChart data={snapshot.categoryShare} />
-          </Suspense>
-
-          <div className="category-share-list" aria-label="Category share details">
-            {snapshot.categoryShare.map((category) => (
-              <article className="category-share-item" key={category.id}>
-                <div className="category-share-item__label">
-                  <span className="category-share-item__swatch" aria-hidden="true" style={{ backgroundColor: category.color }} />
-                  <strong>{category.label}</strong>
-                </div>
-
-                <span className="category-share-item__metric">{getCategorySharePercentage(category, categoryShareTotal)}</span>
-                <span className="category-share-item__units">{formatInteger(category.value)} units</span>
+            <div className="approval-summary">
+              <article className="approval-summary__card">
+                <span>{text.pendingApproval}</span>
+                <strong>{pendingApprovals.length}</strong>
+                <p>{text.pendingApprovalDetail}</p>
               </article>
-            ))}
-          </div>
-        </div>
+
+              <article className="approval-summary__card">
+                <span>{text.approvedQueue}</span>
+                <strong>{approvalQueue.filter((item) => item.approvalStatus === 'Approved').length}</strong>
+                <p>{text.approvedQueueDetail}</p>
+              </article>
+
+              <article className="approval-summary__card">
+                <span>{text.approvedUnits}</span>
+                <strong>
+                  {formatInteger(
+                    store.inboundOrders
+                      .filter((item) => item.approvalStatus === 'Approved')
+                      .reduce((sum, item) => sum + countOrderUnits(item.lineItems), 0) +
+                      store.outboundOrders
+                        .filter((item) => item.approvalStatus === 'Approved')
+                        .reduce((sum, item) => sum + countOrderUnits(item.lineItems), 0),
+                    locale,
+                  )}
+                </strong>
+                <p>{text.approvedUnitsDetail}</p>
+              </article>
+            </div>
+
+            <div className="approval-feed">
+              {pendingApprovals.slice(0, 4).map((item) => (
+                <article className="approval-feed__row" key={item.key}>
+                  <div>
+                    <strong>{item.orderNo}</strong>
+                    <p>{locale === 'zh' ? (item.module === 'Inbound' ? '入库' : '出库') : item.module} · {item.partner}</p>
+                  </div>
+                  <span className="status-chip status-chip--warning">{text.pendingApproval}</span>
+                </article>
+              ))}
+
+              {pendingApprovals.length === 0 ? <p className="empty-note">{text.noPendingApprovals}</p> : null}
+            </div>
+
+            {approvedToday.length > 0 ? <div className="admin-inline-note">{text.recentApprovals}</div> : null}
+          </section>
+        ) : null}
       </section>
 
-      <section className="page-panel dashboard-warning-board">
-        <div className="section-heading dashboard-panel-heading">
+      <section className="admin-panel">
+        <div className="admin-panel__header">
           <div>
-            <p className="section-kicker">Warnings</p>
-            <h2>Inventory watchlist</h2>
+            <p className="section-kicker">{text.warningsKicker}</p>
+            <h2>{text.warningsTitle}</h2>
           </div>
 
-          <div className="dashboard-warning-summary">
-            <span className="status-pill status-pill--critical">{criticalWarnings} critical</span>
-            <span className="status-pill status-pill--warning">{snapshot.warnings.length - criticalWarnings} warning</span>
-            <span className="status-pill status-pill--muted">{impactedCountries} countries</span>
-            <span className="status-pill status-pill--muted">{impactedWarehouses} sites</span>
+          <div className="admin-toolbar__actions">
+            <span className="status-chip status-chip--danger">
+              {snapshot.warnings.filter((warning) => warning.severity === 'critical').length} {text.critical}
+            </span>
+            <span className="status-chip status-chip--warning">{snapshot.warnings.length} {text.total}</span>
           </div>
         </div>
-
-        <p className="section-copy">
-          The watchlist is shown as a full-width operational queue so more domestic and overseas warehouses can be added without compressing the dashboard.
-        </p>
 
         <div className="table-wrap">
-          <table className="orders-table warning-table">
+          <table className="admin-table">
             <thead>
               <tr>
-                <th>Severity</th>
-                <th>SKU / Product</th>
-                <th>Category</th>
-                <th>Region / Country</th>
-                <th>Warehouse</th>
-                <th>Location</th>
-                <th>On Hand</th>
-                <th>Threshold</th>
-                <th>Recommended Action</th>
+                <th>{text.severity}</th>
+                <th>{text.sku}</th>
+                <th>{text.warehouse}</th>
+                <th>{text.country}</th>
+                <th>{text.onHand}</th>
+                <th>{text.threshold}</th>
+                <th>{text.action}</th>
               </tr>
             </thead>
             <tbody>
-              {snapshot.warnings.map((warning) => (
+              {warningPreview.map((warning) => (
                 <tr key={warning.id}>
                   <td>
-                    <span className={`status-pill ${getWarningToneClass(warning)}`}>{warning.severity}</span>
+                    <span className={`status-chip ${getWarningToneClass(warning)}`}>
+                      {warning.severity === 'critical' ? text.critical : locale === 'zh' ? '预警' : 'warning'}
+                    </span>
                   </td>
                   <td>
-                    <div className="warning-table__product">
+                    <div className="table-primary">
                       <strong>{warning.sku}</strong>
                       <span>{warning.productName}</span>
                     </div>
                   </td>
-                  <td>{warning.category}</td>
-                  <td>
-                    <div className="warning-table__stack">
-                      <strong>{warning.region}</strong>
-                      <span>{warning.country}</span>
-                    </div>
-                  </td>
                   <td>{warning.warehouse}</td>
-                  <td>{warning.location}</td>
-                  <td>{formatInteger(warning.onHand)}</td>
-                  <td>{formatInteger(warning.threshold)}</td>
-                  <td className="warning-table__action">{warning.recommendedAction}</td>
+                  <td>{warning.country}</td>
+                  <td>{formatInteger(warning.onHand, locale)}</td>
+                  <td>{formatInteger(warning.threshold, locale)}</td>
+                  <td>{warning.recommendedAction}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </section>
-    </>
+    </div>
   );
 }
