@@ -1,8 +1,28 @@
 import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
-import type { Dispatch, FormEvent, SetStateAction } from 'react';
+import type { FormEvent } from 'react';
 import './App.css';
 import Dashboard from './Dashboard';
 import LanguageToggle from './LanguageToggle';
+import {
+  fetchInbounds,
+  fetchCurrentAuthUser,
+  fetchInventory,
+  fetchOutbounds,
+  fetchProducts,
+  fetchUsers,
+  fetchWarehouses,
+  getApiBaseUrl,
+  loginAuthUser,
+  registerAuthUser,
+  type BackendAuthUser,
+  type BackendInboundOrder,
+  type BackendInventoryItem,
+  type BackendOrderLineItem,
+  type BackendOutboundOrder,
+  type BackendProduct,
+  type BackendWorkspaceUser,
+  type BackendWarehouse,
+} from './api';
 import * as ops from './operations';
 import {
   authContentByLocale,
@@ -19,7 +39,9 @@ const validRoutes = new Set<Route>(routeOrder);
 const routeIndex = Object.fromEntries(routeOrder.map((route, index) => [route, index])) as Record<Route, number>;
 const transitionDurationMs = 220;
 const authLocaleStorageKey = 'northline-auth-locale';
-const sessionUserStorageKey = 'northline-session-user-id';
+const sessionTokenStorageKey = 'northline-session-token';
+const registeredEmailStorageKey = 'northline-registered-email';
+const backendCategoryId = 'CAT-BACKEND-01';
 const initialWorkspaceStore = ops.createInitialWorkspaceStore();
 const initialOperationalSelections = ops.createInitialSelections(initialWorkspaceStore);
 
@@ -46,12 +68,288 @@ function readStoredAuthLocale(): AuthLocale {
   return window.localStorage.getItem(authLocaleStorageKey) === 'zh' ? 'zh' : 'en';
 }
 
-function readStoredSessionUserId() {
+function readStoredSessionToken() {
   if (typeof window === 'undefined') {
     return '';
   }
 
-  return window.localStorage.getItem(sessionUserStorageKey) ?? '';
+  return window.localStorage.getItem(sessionTokenStorageKey) ?? '';
+}
+
+function readStoredRegisteredEmail() {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  return window.localStorage.getItem(registeredEmailStorageKey) ?? '';
+}
+
+function toWorkspaceRole(role: BackendAuthUser['role']): ops.UserRole {
+  return role === 'ADMIN' ? 'Admin' : 'Staff';
+}
+
+function formatSessionUserName(email: string, explicitName?: string | null) {
+  if (explicitName?.trim()) {
+    return explicitName.trim();
+  }
+
+  const base = email.split('@')[0] ?? 'Warehouse User';
+
+  return base
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+}
+
+function toSessionUser(user: BackendAuthUser): ops.UserSession {
+  return {
+    id: user.id,
+    email: user.email,
+    name: formatSessionUserName(user.email, user.name),
+    role: toWorkspaceRole(user.role),
+  };
+}
+
+function isSameSessionUser(left: ops.UserSession | null, right: ops.UserSession) {
+  return !!left && left.id === right.id && left.email === right.email && left.name === right.name && left.role === right.role;
+}
+
+function syncSessionUserIntoStore(store: ops.WorkspaceStore, sessionUser: ops.UserSession) {
+  const syncedAt = ops.nowIso();
+  const existingUser = store.users.find((user) => user.id === sessionUser.id);
+
+  if (existingUser) {
+    return {
+      ...store,
+      users: store.users.map((user) =>
+        user.id === sessionUser.id
+          ? {
+              ...user,
+              name: sessionUser.name,
+              email: sessionUser.email,
+              role: sessionUser.role,
+              status: 'Active' as const,
+              lastLoginAt: syncedAt,
+              permissionsUpdatedAt: syncedAt,
+            }
+          : user,
+      ),
+      lastSync: syncedAt,
+    };
+  }
+
+  return {
+    ...store,
+    users: [
+      {
+        id: sessionUser.id,
+        name: sessionUser.name,
+        email: sessionUser.email,
+        role: sessionUser.role,
+        status: 'Active' as const,
+        appointedBy: 'Backend auth',
+        appointedAt: syncedAt,
+        permissionsUpdatedAt: syncedAt,
+        lastLoginAt: syncedAt,
+      },
+      ...store.users,
+    ],
+    lastSync: syncedAt,
+  };
+}
+
+function toInventoryThreshold(onHand: number) {
+  if (onHand <= 0) {
+    return 10;
+  }
+
+  return Math.max(10, Math.ceil(onHand * 0.2));
+}
+
+function mapBackendOrderLineItems(lineItems: BackendOrderLineItem[]): ops.OrderLineItem[] {
+  return lineItems.map((lineItem) => ({
+    id: lineItem.id,
+    productId: lineItem.productId,
+    quantity: lineItem.quantity,
+    notes: lineItem.notes,
+  }));
+}
+
+function mapBackendInboundOrder(order: BackendInboundOrder): ops.InboundRecord {
+  return {
+    id: order.id,
+    inboundNo: order.inboundNo,
+    warehouseId: order.warehouseId,
+    supplierName: order.supplierName,
+    referenceNo: order.referenceNo,
+    plannedDate: order.plannedDate,
+    status: order.status,
+    createdBy: order.createdBy,
+    createdAt: order.createdAt,
+    confirmedAt: order.confirmedAt,
+    notes: order.notes,
+    lineItems: mapBackendOrderLineItems(order.lineItems),
+    approvalStatus: order.approvalStatus,
+    approvalReason: order.approvalReason,
+    approvalUpdatedAt: order.approvalUpdatedAt,
+    approvedBy: order.approvedBy,
+    appliedAt: '',
+  };
+}
+
+function mapBackendOutboundOrder(order: BackendOutboundOrder): ops.OutboundRecord {
+  return {
+    id: order.id,
+    outboundNo: order.outboundNo,
+    warehouseId: order.warehouseId,
+    destination: order.destination,
+    carrier: order.carrier,
+    shipmentDate: order.shipmentDate,
+    status: order.status,
+    createdBy: order.createdBy,
+    createdAt: order.createdAt,
+    confirmedAt: order.confirmedAt,
+    notes: order.notes,
+    lineItems: mapBackendOrderLineItems(order.lineItems),
+    approvalStatus: order.approvalStatus,
+    approvalReason: order.approvalReason,
+    approvalUpdatedAt: order.approvalUpdatedAt,
+    approvedBy: order.approvedBy,
+    appliedAt: '',
+  };
+}
+
+function mapBackendWorkspaceUser(user: BackendWorkspaceUser): ops.WorkspaceUser {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: toWorkspaceRole(user.role),
+    status: user.status,
+    canDelete: user.canDelete ?? false,
+    appointedBy: user.appointedBy,
+    appointedAt: user.appointedAt,
+    permissionsUpdatedAt: user.permissionsUpdatedAt,
+    lastLoginAt: user.lastLoginAt || user.updatedAt || user.createdAt,
+  };
+}
+
+type SyncedBackendData = {
+  products: BackendProduct[];
+  warehouses: BackendWarehouse[];
+  inventory: BackendInventoryItem[];
+  inbounds: BackendInboundOrder[];
+  outbounds: BackendOutboundOrder[];
+  users: BackendWorkspaceUser[];
+};
+
+function mapBackendDataToStore(
+  store: ops.WorkspaceStore,
+  sessionUser: ops.UserSession,
+  backendData: SyncedBackendData,
+) {
+  const inventoryWarehouseTotals = new Map<string, number>();
+  const productWarehouseMap = new Map<string, string>();
+
+  backendData.inventory.forEach((item) => {
+    inventoryWarehouseTotals.set(item.warehouseId, (inventoryWarehouseTotals.get(item.warehouseId) ?? 0) + item.onHand);
+
+    if (!productWarehouseMap.has(item.productId)) {
+      productWarehouseMap.set(item.productId, item.warehouseId);
+    }
+  });
+
+  const fallbackWarehouseId = backendData.warehouses[0]?.id ?? store.warehouses[0]?.id ?? 'WH-BACKEND-DEFAULT';
+  const sessionSyncedStore = syncSessionUserIntoStore(store, sessionUser);
+  const lastSyncCandidates = [
+    ...backendData.products.map((product) => product.updatedAt),
+    ...backendData.warehouses.map((warehouse) => warehouse.updatedAt),
+    ...backendData.inventory.map((inventoryItem) => inventoryItem.updatedAt),
+    ...backendData.inbounds.flatMap((order) => [order.createdAt, order.confirmedAt, order.approvalUpdatedAt].filter(Boolean)),
+    ...backendData.outbounds.flatMap((order) => [order.createdAt, order.confirmedAt, order.approvalUpdatedAt].filter(Boolean)),
+    ...backendData.users.flatMap((user) => [user.permissionsUpdatedAt, user.lastLoginAt, user.updatedAt].filter(Boolean)),
+  ].filter(Boolean);
+
+  const backendMappedStore = {
+    ...sessionSyncedStore,
+    categories: [
+      {
+        id: backendCategoryId,
+        categoryCode: backendCategoryId,
+        categoryName: 'Backend Catalog',
+        status: 'Active',
+      },
+    ],
+    warehouses: backendData.warehouses.map((warehouse) => ({
+      id: warehouse.id,
+      warehouseCode: warehouse.code,
+      warehouseName: warehouse.name,
+      region: 'Backend',
+      country: 'Backend',
+      location: warehouse.location ?? 'Unspecified',
+      capacity: Math.max(1000, Math.ceil((inventoryWarehouseTotals.get(warehouse.id) ?? 0) * 1.5)),
+      status: 'Active',
+    })),
+    products: backendData.products.map((product) => ({
+      id: product.id,
+      productCode: product.sku,
+      productName: product.name,
+      categoryId: backendCategoryId,
+      warehouseId: productWarehouseMap.get(product.id) ?? fallbackWarehouseId,
+      unit: product.unit ?? 'Unit',
+      status: 'Active',
+    })),
+    inventoryRecords: backendData.inventory.map((inventoryItem) => ({
+      id: inventoryItem.id,
+      productId: inventoryItem.productId,
+      warehouseId: inventoryItem.warehouseId,
+      location: inventoryItem.warehouse.location ?? 'MAIN',
+      onHandBase: inventoryItem.onHand,
+      threshold: toInventoryThreshold(inventoryItem.onHand),
+      updatedAt: inventoryItem.updatedAt,
+    })),
+    inboundOrders: backendData.inbounds.map(mapBackendInboundOrder),
+    outboundOrders: backendData.outbounds.map(mapBackendOutboundOrder),
+    users: backendData.users.map(mapBackendWorkspaceUser),
+    lastSync: lastSyncCandidates.sort().at(-1) ?? ops.nowIso(),
+  } satisfies ops.WorkspaceStore;
+
+  return syncSessionUserIntoStore(backendMappedStore, sessionUser);
+}
+
+type WorkspaceSelectionOverrides = Partial<ops.OperationalSelections>;
+
+function resolveSelectionId(candidates: string[], preferred?: string, fallback?: string) {
+  if (preferred && candidates.includes(preferred)) {
+    return preferred;
+  }
+
+  if (fallback && candidates.includes(fallback)) {
+    return fallback;
+  }
+
+  return candidates[0] ?? '';
+}
+
+function reconcileSelections(
+  store: ops.WorkspaceStore,
+  current: ops.OperationalSelections,
+  overrides: WorkspaceSelectionOverrides = {},
+): ops.OperationalSelections {
+  const inventoryIds = ops.buildInventorySnapshots(store).map((item) => item.id);
+  const inboundIds = store.inboundOrders.map((item) => item.id);
+  const outboundIds = store.outboundOrders.map((item) => item.id);
+  const approvalKeys = ops.buildApprovalQueue(store).map((item) => item.key);
+  const userIds = store.users.map((item) => item.id);
+
+  return {
+    inventoryId: resolveSelectionId(inventoryIds, overrides.inventoryId, current.inventoryId),
+    inboundId: resolveSelectionId(inboundIds, overrides.inboundId, current.inboundId),
+    outboundId: resolveSelectionId(outboundIds, overrides.outboundId, current.outboundId),
+    approvalKey: resolveSelectionId(approvalKeys, overrides.approvalKey, current.approvalKey),
+    userId: resolveSelectionId(userIds, overrides.userId, current.userId),
+  };
 }
 
 function resolveRouteForSession(route: Route, currentUser: ops.UserSession | null): Route {
@@ -96,14 +394,49 @@ function App() {
   const [authLocale, setAuthLocale] = useState<AuthLocale>(() => readStoredAuthLocale());
   const [workspaceStore, setWorkspaceStore] = useState<ops.WorkspaceStore>(() => initialWorkspaceStore);
   const [operationalSelections, setOperationalSelections] = useState<ops.OperationalSelections>(() => initialOperationalSelections);
-  const [sessionUserId, setSessionUserId] = useState(() => readStoredSessionUserId());
+  const [currentUser, setCurrentUser] = useState<ops.UserSession | null>(null);
+  const [sessionToken, setSessionToken] = useState('');
+  const [registeredEmail, setRegisteredEmail] = useState(() => readStoredRegisteredEmail());
+  const [authNotice, setAuthNotice] = useState('');
+  const [authReady, setAuthReady] = useState(false);
   const [transitionState, setTransitionState] = useState<'idle' | 'exiting' | 'entering'>('idle');
   const [transitionDirection, setTransitionDirection] = useState<'forward' | 'backward'>('forward');
   const prefersReducedMotion = usePrefersReducedMotion();
   const displayRouteRef = useRef<Route>(initialRoute);
   const transitionTimers = useRef<number[]>([]);
-  const currentUserRecord = workspaceStore.users.find((user) => user.id === sessionUserId) ?? null;
-  const currentUser = currentUserRecord ? ops.buildUserSession(currentUserRecord) : null;
+
+  const refreshWorkspaceData = useCallback(
+    async (options: { selections?: WorkspaceSelectionOverrides } = {}) => {
+      if (!sessionToken) {
+        return;
+      }
+
+      const [authUser, productResult, warehouseResult, inventoryResult, inboundResult, outboundResult, userResult] = await Promise.all([
+        fetchCurrentAuthUser(sessionToken),
+        fetchProducts(sessionToken),
+        fetchWarehouses(sessionToken),
+        fetchInventory(sessionToken),
+        fetchInbounds(sessionToken),
+        fetchOutbounds(sessionToken),
+        fetchUsers(sessionToken),
+      ]);
+
+      const sessionUser = toSessionUser(authUser);
+      const mappedStore = mapBackendDataToStore(initialWorkspaceStore, sessionUser, {
+        products: productResult.products,
+        warehouses: warehouseResult.warehouses,
+        inventory: inventoryResult.inventory,
+        inbounds: inboundResult.orders,
+        outbounds: outboundResult.orders,
+        users: userResult.users,
+      });
+
+      setCurrentUser((current) => (isSameSessionUser(current, sessionUser) ? current : sessionUser));
+      setWorkspaceStore(mappedStore);
+      setOperationalSelections((current) => reconcileSelections(mappedStore, current, options.selections));
+    },
+    [sessionToken],
+  );
 
   useEffect(() => {
     const clearTimers = () => {
@@ -169,6 +502,60 @@ function App() {
   );
 
   useEffect(() => {
+    let cancelled = false;
+    const storedToken = readStoredSessionToken();
+
+    if (!storedToken) {
+      setAuthReady(true);
+      return;
+    }
+
+    setSessionToken(storedToken);
+    fetchCurrentAuthUser(storedToken)
+      .then((user) => {
+        if (cancelled) {
+          return;
+        }
+
+        const sessionUser = toSessionUser(user);
+        setCurrentUser((current) => (isSameSessionUser(current, sessionUser) ? current : sessionUser));
+        setWorkspaceStore((current) => syncSessionUserIntoStore(current, sessionUser));
+      })
+      .catch(() => {
+        if (typeof window !== 'undefined') {
+          window.localStorage.removeItem(sessionTokenStorageKey);
+        }
+        if (!cancelled) {
+          setSessionToken('');
+          setCurrentUser(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAuthReady(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser || !sessionToken) {
+      return;
+    }
+
+    refreshWorkspaceData().catch((error) => {
+      console.error('Failed to sync backend workspace data:', error);
+    });
+  }, [currentUser?.id, refreshWorkspaceData, sessionToken]);
+
+  useEffect(() => {
+    if (!authReady) {
+      return undefined;
+    }
+
     const syncRoute = () => {
       const nextRoute = readRouteFromHash();
       const resolvedRoute = resolveRouteForSession(nextRoute, currentUser);
@@ -191,7 +578,7 @@ function App() {
     return () => {
       window.removeEventListener('hashchange', syncRoute);
     };
-  }, [currentUser, transitionToRoute]);
+  }, [authReady, currentUser, transitionToRoute]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -204,13 +591,23 @@ function App() {
       return;
     }
 
-    if (sessionUserId) {
-      window.localStorage.setItem(sessionUserStorageKey, sessionUserId);
+    if (!authReady && window.location.hash === '') {
+      writeRouteToHash('login');
+    }
+  }, [authReady]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
       return;
     }
 
-    window.localStorage.removeItem(sessionUserStorageKey);
-  }, [sessionUserId]);
+    if (registeredEmail) {
+      window.localStorage.setItem(registeredEmailStorageKey, registeredEmail);
+      return;
+    }
+
+    window.localStorage.removeItem(registeredEmailStorageKey);
+  }, [registeredEmail]);
 
   const navigate = (nextRoute: Route) => {
     const resolvedRoute = resolveRouteForSession(nextRoute, currentUser);
@@ -227,16 +624,51 @@ function App() {
     writeRouteToHash(resolvedRoute);
   };
 
-  function handleAuthenticate(userId: string) {
-    setSessionUserId(userId);
+  function handleAuthenticate(sessionUser: ops.UserSession, token: string) {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(sessionTokenStorageKey, token);
+      window.localStorage.removeItem(registeredEmailStorageKey);
+    }
+
+    setSessionToken(token);
+    setCurrentUser(sessionUser);
+    setRegisteredEmail('');
+    setAuthNotice('');
+    setWorkspaceStore((current) => syncSessionUserIntoStore(current, sessionUser));
+  }
+
+  function handleRegistrationComplete(email: string) {
+    setRegisteredEmail(email);
+    setAuthNotice(
+      authLocale === 'zh'
+        ? `注册成功，请使用 ${email} 登录。`
+        : `Registration successful. Sign in with ${email}.`,
+    );
+    writeRouteToHash('login');
   }
 
   function handleSignOut() {
-    setSessionUserId('');
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(sessionTokenStorageKey);
+    }
+
+    setSessionToken('');
+    setCurrentUser(null);
     writeRouteToHash('login');
   }
 
   const authVariant: AuthVariant = isAuthRoute(displayRoute) ? displayRoute : 'login';
+
+  if (!authReady) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-white px-6">
+        <div className="rounded-3xl border border-slate-200 bg-white px-8 py-6 text-center shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
+          <p className="text-sm font-semibold uppercase tracking-[0.26em] text-slate-400">Northline</p>
+          <p className="mt-3 text-lg text-slate-700">Restoring workspace session...</p>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <div className={`app-shell app-shell--${displayRoute}`}>
@@ -247,9 +679,11 @@ function App() {
             locale={authLocale}
             onLocaleChange={setAuthLocale}
             onNavigate={navigate}
-            store={workspaceStore}
-            setStore={setWorkspaceStore}
             onAuthenticate={handleAuthenticate}
+            onRegistrationComplete={handleRegistrationComplete}
+            registeredEmail={registeredEmail}
+            authNotice={authNotice}
+            onClearAuthNotice={() => setAuthNotice('')}
           />
         ) : (
           <Dashboard
@@ -263,6 +697,8 @@ function App() {
             selections={operationalSelections}
             setSelections={setOperationalSelections}
             currentUser={currentUser}
+            sessionToken={sessionToken}
+            onRefreshWorkspaceData={refreshWorkspaceData}
           />
         )}
       </div>
@@ -275,12 +711,24 @@ type AuthPageProps = {
   locale: AuthLocale;
   onLocaleChange: (locale: AuthLocale) => void;
   onNavigate: (route: Route) => void;
-  store: ops.WorkspaceStore;
-  setStore: Dispatch<SetStateAction<ops.WorkspaceStore>>;
-  onAuthenticate: (userId: string) => void;
+  onAuthenticate: (sessionUser: ops.UserSession, token: string) => void;
+  onRegistrationComplete: (email: string) => void;
+  registeredEmail: string;
+  authNotice: string;
+  onClearAuthNotice: () => void;
 };
 
-function AuthPage({ variant, locale, onLocaleChange, onNavigate, store, setStore, onAuthenticate }: AuthPageProps) {
+function AuthPage({
+  variant,
+  locale,
+  onLocaleChange,
+  onNavigate,
+  onAuthenticate,
+  onRegistrationComplete,
+  registeredEmail,
+  authNotice,
+  onClearAuthNotice,
+}: AuthPageProps) {
   const content = authContentByLocale[locale][variant];
   const brand = getBrandContent(locale);
   const isLogin = variant === 'login';
@@ -288,32 +736,51 @@ function AuthPage({ variant, locale, onLocaleChange, onNavigate, store, setStore
   const primaryAction = locale === 'zh' ? (isLogin ? '登录' : '注册') : isLogin ? 'LOGIN' : 'REGISTER';
   const forgotPasswordLabel = locale === 'zh' ? '忘记密码？' : 'Forgot Password?';
   const footerLabel = `${content.footerLabel} `;
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [emailValue, setEmailValue] = useState(() => (isLogin ? registeredEmail : ''));
+  const [passwordValue, setPasswordValue] = useState('');
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  useEffect(() => {
+    if (isLogin) {
+      setEmailValue(registeredEmail);
+      setPasswordValue('');
+      return;
+    }
+
+    onClearAuthNotice();
+    setPasswordValue('');
+  }, [isLogin, onClearAuthNotice, registeredEmail]);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    setErrorMessage('');
     const formData = new FormData(event.currentTarget);
-    const email = String(formData.get('email') ?? '').trim();
-    const name = String(formData.get('name') ?? '').trim();
+    const email = emailValue.trim();
+    const password = passwordValue;
 
-    if (!email) {
+    if (!email || !password) {
       return;
     }
 
-    const existingUser = ops.findUserByEmail(store, email);
+    setIsSubmitting(true);
 
-    if (existingUser) {
-      setStore((current) => ops.recordUserLogin(current, existingUser.id));
-      onAuthenticate(existingUser.id);
-      return;
+    try {
+      if (isLogin) {
+        const result = await loginAuthUser({ email, password });
+        onAuthenticate(toSessionUser(result.user), result.token);
+        return;
+      }
+
+      const nameValue = String(formData.get('name') ?? '').trim();
+      await registerAuthUser({ email, password, ...(nameValue ? { name: nameValue } : {}) });
+      onRegistrationComplete(email);
+      setPasswordValue('');
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Authentication request failed');
+    } finally {
+      setIsSubmitting(false);
     }
-
-    const result = ops.registerWorkspaceUser(store, {
-      email,
-      name,
-    });
-
-    setStore(result.store);
-    onAuthenticate(result.user.id);
   };
 
   return (
@@ -383,18 +850,65 @@ function AuthPage({ variant, locale, onLocaleChange, onNavigate, store, setStore
                     <span className="sr-only">{field.label}</span>
                     <div className="flex items-center gap-3 border-b border-slate-300 pb-3 text-slate-400 transition group-focus-within:border-blue-600 group-focus-within:text-blue-600">
                       {field.type === 'password' ? <LockGlyph /> : <MailGlyph />}
-                      <input
-                        name={field.autoComplete === 'name' ? 'name' : field.type === 'password' ? 'password' : 'email'}
-                        className="w-full border-0 bg-transparent px-0 py-0 text-lg text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-0"
-                        autoComplete={field.autoComplete}
-                        placeholder={field.placeholder}
-                        required
-                        type={field.type}
-                      />
+                      {field.autoComplete === 'name' ? (
+                        <input
+                          name="name"
+                          className="w-full border-0 bg-transparent px-0 py-0 text-lg text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-0"
+                          autoComplete={field.autoComplete}
+                          placeholder={field.placeholder}
+                          required
+                          disabled={isSubmitting}
+                          type={field.type}
+                        />
+                      ) : (
+                        <input
+                          name={field.type === 'password' ? 'password' : 'email'}
+                          className="w-full border-0 bg-transparent px-0 py-0 text-lg text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-0"
+                          autoComplete={field.autoComplete}
+                          placeholder={field.placeholder}
+                          required
+                          disabled={isSubmitting}
+                          type={field.type}
+                          value={field.type === 'password' ? passwordValue : emailValue}
+                          onChange={(event) => {
+                            if (field.type === 'password') {
+                              setPasswordValue(event.target.value);
+                              return;
+                            }
+
+                            if (errorMessage) {
+                              setErrorMessage('');
+                            }
+                            if (authNotice && isLogin) {
+                              onClearAuthNotice();
+                            }
+
+                            setEmailValue(event.target.value);
+                          }}
+                        />
+                      )}
                     </div>
                   </label>
                 ))}
               </div>
+
+              {authNotice && isLogin ? (
+                <p className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                  {authNotice}
+                </p>
+              ) : null}
+
+              {errorMessage ? (
+                <p className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                  {errorMessage}
+                </p>
+              ) : null}
+
+              <p className="mt-5 text-xs text-slate-400">
+                {locale === 'zh'
+                  ? `当前认证服务：${getApiBaseUrl()}`
+                  : `Current auth service: ${getApiBaseUrl()}`}
+              </p>
 
               <div className="mt-7 flex items-center justify-between gap-4">
                 {isLogin ? (
@@ -407,9 +921,10 @@ function AuthPage({ variant, locale, onLocaleChange, onNavigate, store, setStore
 
                 <button
                   className="inline-flex min-w-[168px] items-center justify-center rounded-full bg-blue-600 px-7 py-3 text-sm font-semibold tracking-[0.24em] text-white shadow-[0_14px_30px_rgba(37,99,235,0.22)] transition hover:bg-blue-700 hover:shadow-[0_18px_34px_rgba(37,99,235,0.28)]"
+                  disabled={isSubmitting}
                   type="submit"
                 >
-                  {primaryAction}
+                  {isSubmitting ? (locale === 'zh' ? '处理中...' : 'PROCESSING...') : primaryAction}
                 </button>
               </div>
 

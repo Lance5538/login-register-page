@@ -33,6 +33,7 @@ export type WorkspaceUser = {
   email: string;
   role: UserRole;
   status: UserStatus;
+  canDelete?: boolean;
   appointedBy: string;
   appointedAt: string;
   permissionsUpdatedAt: string;

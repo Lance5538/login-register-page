@@ -27,6 +27,8 @@ type DashboardProps = {
   selections: ops.OperationalSelections;
   setSelections: Dispatch<SetStateAction<ops.OperationalSelections>>;
   currentUser: ops.UserSession | null;
+  sessionToken: string;
+  onRefreshWorkspaceData: (options?: { selections?: Partial<ops.OperationalSelections> }) => Promise<void>;
 };
 
 function formatDateTime(value: string, locale: AuthLocale) {
@@ -85,6 +87,8 @@ export default function Dashboard({
   selections,
   setSelections,
   currentUser,
+  sessionToken,
+  onRefreshWorkspaceData,
 }: DashboardProps) {
   const [now, setNow] = useState(() => new Date());
   const resolvedRoute = resolveWorkspaceRoute(route);
@@ -228,6 +232,8 @@ export default function Dashboard({
               setSelections={setSelections}
               onNavigate={onNavigate}
               currentUser={currentUser}
+              sessionToken={sessionToken}
+              onRefreshWorkspaceData={onRefreshWorkspaceData}
             />
           )}
         </section>

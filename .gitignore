@@ -2,3 +2,7 @@
 *.xlsx
 ~$*.xlsx
 images/
+node_modules/
+dist/
+.env.production
+real-time-inventory-system-main/backend/.env

@@ -20,4 +20,4 @@ The Vite `base` setting uses relative asset paths so the built output is easier 
 ## Project note
 
 - `frontend` is the main version to continue developing.
-- The repository name is `auth-dashboard-app`.
+- The repository name is `smart-warehouse-system`.

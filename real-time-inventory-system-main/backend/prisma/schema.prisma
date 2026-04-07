@@ -1,0 +1,234 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  STAFF
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+}
+
+enum InventoryTransactionType {
+  STOCK_IN
+  STOCK_OUT
+  TRANSFER
+  ADJUSTMENT
+  RESERVE
+  RELEASE
+  COMMIT_OUT
+}
+
+enum ApprovalStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+}
+
+enum InboundStatus {
+  DRAFT
+  PENDING_RECEIPT
+  RECEIVED
+}
+
+enum OutboundStatus {
+  DRAFT
+  PENDING_SHIPMENT
+  SHIPPED
+}
+
+model User {
+  id                   String   @id @default(cuid())
+  name                 String?
+  email                String   @unique
+  passwordHash         String
+  role                 UserRole @default(STAFF)
+  status               UserStatus @default(ACTIVE)
+  appointedBy          String?
+  appointedAt          DateTime?
+  permissionsUpdatedAt DateTime @default(now())
+  lastLoginAt          DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  transactions InventoryTransaction[] @relation("TransactionCreatedBy")
+  inboundOrdersCreated InboundOrder[]  @relation("InboundCreatedBy")
+  inboundOrdersApproved InboundOrder[] @relation("InboundApprovedBy")
+  outboundOrdersCreated OutboundOrder[] @relation("OutboundCreatedBy")
+  outboundOrdersApproved OutboundOrder[] @relation("OutboundApprovedBy")
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  sku         String   @unique
+  description String?
+  unit        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  inventories        Inventory[]
+  transactions       InventoryTransaction[]
+  inboundLineItems   InboundLineItem[]
+  outboundLineItems  OutboundLineItem[]
+}
+
+model Warehouse {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  location  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  inventories         Inventory[]
+  transactions        InventoryTransaction[] @relation("TransactionWarehouse")
+  sourceTransfers     InventoryTransaction[] @relation("SourceWarehouse")
+  targetTransfers     InventoryTransaction[] @relation("TargetWarehouse")
+  inboundOrders       InboundOrder[]
+  outboundOrders      OutboundOrder[]
+}
+
+model Inventory {
+  id          String   @id @default(cuid())
+  productId   String
+  warehouseId String
+  onHand      Int      @default(0)
+  reserved    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, warehouseId], map: "inventory_product_warehouse_unique")
+  @@index([warehouseId], map: "inventory_warehouse_idx")
+  @@index([productId], map: "inventory_product_idx")
+}
+
+model InventoryTransaction {
+  id                String                   @id @default(cuid())
+  type              InventoryTransactionType
+  productId         String
+  warehouseId       String
+  sourceWarehouseId String?
+  targetWarehouseId String?
+  quantity          Int
+
+  beforeOnHand      Int
+  afterOnHand       Int
+  beforeReserved    Int      @default(0)
+  afterReserved     Int      @default(0)
+
+  reference         String?
+  note              String?
+  createdById       String
+  createdAt         DateTime                 @default(now())
+
+  product           Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse         Warehouse  @relation("TransactionWarehouse", fields: [warehouseId], references: [id], onDelete: Cascade)
+  sourceWarehouse   Warehouse? @relation("SourceWarehouse", fields: [sourceWarehouseId], references: [id], onDelete: NoAction)
+  targetWarehouse   Warehouse? @relation("TargetWarehouse", fields: [targetWarehouseId], references: [id], onDelete: NoAction)
+  createdBy         User       @relation("TransactionCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([productId, warehouseId])
+  @@index([createdById])
+  @@index([createdAt])
+  @@index([type])
+}
+
+model InboundOrder {
+  id                String         @id @default(cuid())
+  inboundNo         String         @unique
+  warehouseId       String
+  supplierName      String
+  referenceNo       String?
+  plannedDate       DateTime
+  status            InboundStatus  @default(DRAFT)
+  approvalStatus    ApprovalStatus @default(PENDING_APPROVAL)
+  approvalReason    String?
+  notes             String?
+  createdById       String
+  approvedById      String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  confirmedAt       DateTime?
+  approvalUpdatedAt DateTime?
+  appliedAt         DateTime?
+
+  warehouse         Warehouse         @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  createdBy         User              @relation("InboundCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+  approvedBy        User?             @relation("InboundApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  lineItems         InboundLineItem[]
+
+  @@index([warehouseId])
+  @@index([createdById])
+  @@index([approvalStatus])
+  @@index([status])
+}
+
+model InboundLineItem {
+  id             String       @id @default(cuid())
+  inboundOrderId String
+  productId      String
+  quantity       Int
+  notes          String?
+
+  inboundOrder   InboundOrder @relation(fields: [inboundOrderId], references: [id], onDelete: Cascade)
+  product        Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([inboundOrderId])
+  @@index([productId])
+}
+
+model OutboundOrder {
+  id                String         @id @default(cuid())
+  outboundNo        String         @unique
+  warehouseId       String
+  destination       String
+  carrier           String?
+  shipmentDate      DateTime
+  status            OutboundStatus @default(DRAFT)
+  approvalStatus    ApprovalStatus @default(PENDING_APPROVAL)
+  approvalReason    String?
+  notes             String?
+  createdById       String
+  approvedById      String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  confirmedAt       DateTime?
+  approvalUpdatedAt DateTime?
+  appliedAt         DateTime?
+
+  warehouse         Warehouse          @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  createdBy         User               @relation("OutboundCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+  approvedBy        User?              @relation("OutboundApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  lineItems         OutboundLineItem[]
+
+  @@index([warehouseId])
+  @@index([createdById])
+  @@index([approvalStatus])
+  @@index([status])
+}
+
+model OutboundLineItem {
+  id              String        @id @default(cuid())
+  outboundOrderId String
+  productId       String
+  quantity        Int
+  notes           String?
+
+  outboundOrder   OutboundOrder @relation(fields: [outboundOrderId], references: [id], onDelete: Cascade)
+  product         Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([outboundOrderId])
+  @@index([productId])
+}

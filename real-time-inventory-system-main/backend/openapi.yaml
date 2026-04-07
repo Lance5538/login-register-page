@@ -1,0 +1,1968 @@
+openapi: 3.0.3
+info:
+  title: Real-Time Inventory Management API
+  version: 1.0.1
+  description: API documentation for the backend service.
+
+servers:
+  - url: http://localhost:4000
+
+security: []
+
+tags:
+  - name: Health
+  - name: Auth
+  - name: Products
+  - name: Warehouses
+  - name: Inventory
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+
+  /auth/register:
+    post:
+      summary: Register a user
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterInput'
+            example:
+              email: admin@example.com
+              password: secret123
+              role: ADMIN
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+              example:
+                message: User registered successfully
+                user:
+                  id: cmuser001
+                  email: admin@example.com
+                  role: ADMIN
+                  createdAt: '2026-04-04T10:00:00.000Z'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Invalid email format
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Email already registered
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Internal server error
+
+  /auth/login:
+    post:
+      summary: Login user
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginInput'
+            example:
+              email: admin@example.com
+              password: secret123
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                message: Login successful
+                token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.example
+                user:
+                  id: cmuser001
+                  email: admin@example.com
+                  role: ADMIN
+                  createdAt: '2026-04-04T10:00:00.000Z'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Password is required
+        '401':
+          description: Invalid email or password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Invalid email or password
+        '500':
+          description: JWT secret missing or internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: JWT_SECRET is not configured
+
+  /auth/me:
+    get:
+      summary: Get current authenticated user
+      description: Requires authentication.
+      tags: [Auth]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current user returned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+              example:
+                id: cmuser001
+                email: admin@example.com
+                role: ADMIN
+                createdAt: '2026-04-04T10:00:00.000Z'
+                updatedAt: '2026-04-04T10:00:00.000Z'
+        '401':
+          description: Unauthorized or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: User not found
+
+  /products:
+    get:
+      summary: List products
+      description: Requires authentication.
+      tags: [Products]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Products returned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProductsResponse'
+              example:
+                products:
+                  - id: cmprod001
+                    name: Demo Product
+                    sku: DEMO-SKU-001
+                    description: Demo product description
+                    unit: pcs
+                    createdAt: '2026-04-04T10:10:00.000Z'
+                    updatedAt: '2026-04-04T10:10:00.000Z'
+        '401':
+          description: Unauthorized or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+    post:
+      summary: Create product
+      description: Requires authentication and ADMIN role.
+      tags: [Products]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProductInput'
+            example:
+              name: Demo Product
+              sku: DEMO-SKU-001
+              description: Demo product description
+              unit: pcs
+      responses:
+        '201':
+          description: Product created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductMutationResponse'
+              example:
+                message: Product created successfully
+                product:
+                  id: cmprod001
+                  name: Demo Product
+                  sku: DEMO-SKU-001
+                  description: Demo product description
+                  unit: pcs
+                  createdAt: '2026-04-04T10:10:00.000Z'
+                  updatedAt: '2026-04-04T10:10:00.000Z'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '403':
+          description: Forbidden - ADMIN role required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Forbidden
+        '409':
+          description: SKU already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: SKU already exists
+
+  /products/{id}:
+    get:
+      summary: Get product by ID
+      description: Requires authentication.
+      tags: [Products]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: Product returned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProductResponse'
+              example:
+                product:
+                  id: cmprod001
+                  name: Demo Product
+                  sku: DEMO-SKU-001
+                  description: Demo product description
+                  unit: pcs
+                  createdAt: '2026-04-04T10:10:00.000Z'
+                  updatedAt: '2026-04-04T10:10:00.000Z'
+        '401':
+          description: Unauthorized or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '404':
+          description: Product not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Product not found
+    patch:
+      summary: Update product
+      description: Requires authentication and ADMIN role.
+      tags: [Products]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProductInput'
+            example:
+              name: Demo Product Updated
+              sku: DEMO-SKU-002
+              description: Updated description
+              unit: box
+      responses:
+        '200':
+          description: Product updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductMutationResponse'
+              example:
+                message: Product updated successfully
+                product:
+                  id: cmprod001
+                  name: Demo Product Updated
+                  sku: DEMO-SKU-002
+                  description: Updated description
+                  unit: box
+                  createdAt: '2026-04-04T10:10:00.000Z'
+                  updatedAt: '2026-04-04T11:00:00.000Z'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '403':
+          description: Forbidden - ADMIN role required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Forbidden
+        '404':
+          description: Product not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Product not found
+        '409':
+          description: SKU already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: SKU already exists
+    delete:
+      summary: Delete product
+      description: Requires authentication and ADMIN role.
+      tags: [Products]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '204':
+          description: Product deleted successfully
+        '401':
+          description: Unauthorized or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '403':
+          description: Forbidden - ADMIN role required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Forbidden
+        '404':
+          description: Product not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Product not found
+
+  /warehouses:
+    get:
+      summary: List warehouses
+      description: Requires authentication.
+      tags: [Warehouses]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Warehouses returned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehousesResponse'
+              example:
+                warehouses:
+                  - id: cmwh001
+                    name: Main Warehouse
+                    code: WH-A
+                    location: Adelaide
+                    createdAt: '2026-04-04T10:20:00.000Z'
+                    updatedAt: '2026-04-04T10:20:00.000Z'
+        '401':
+          description: Unauthorized or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+    post:
+      summary: Create warehouse
+      description: Requires authentication and ADMIN role.
+      tags: [Warehouses]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWarehouseInput'
+            example:
+              name: Main Warehouse
+              code: WH-A
+              location: Adelaide
+      responses:
+        '201':
+          description: Warehouse created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WarehouseMutationResponse'
+              example:
+                message: Warehouse created successfully
+                warehouse:
+                  id: cmwh001
+                  name: Main Warehouse
+                  code: WH-A
+                  location: Adelaide
+                  createdAt: '2026-04-04T10:20:00.000Z'
+                  updatedAt: '2026-04-04T10:20:00.000Z'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '403':
+          description: Forbidden - ADMIN role required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Forbidden
+        '409':
+          description: Warehouse code already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Warehouse code already exists
+
+  /warehouses/{id}:
+    get:
+      summary: Get warehouse by ID
+      description: Requires authentication.
+      tags: [Warehouses]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '200':
+          description: Warehouse returned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
+              example:
+                warehouse:
+                  id: cmwh001
+                  name: Main Warehouse
+                  code: WH-A
+                  location: Adelaide
+                  createdAt: '2026-04-04T10:20:00.000Z'
+                  updatedAt: '2026-04-04T10:20:00.000Z'
+        '401':
+          description: Unauthorized or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '404':
+          description: Warehouse not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Warehouse not found
+    patch:
+      summary: Update warehouse
+      description: Requires authentication and ADMIN role.
+      tags: [Warehouses]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWarehouseInput'
+            example:
+              name: Secondary Warehouse
+              code: WH-B
+              location: Melbourne
+      responses:
+        '200':
+          description: Warehouse updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WarehouseMutationResponse'
+              example:
+                message: Warehouse updated successfully
+                warehouse:
+                  id: cmwh001
+                  name: Secondary Warehouse
+                  code: WH-B
+                  location: Melbourne
+                  createdAt: '2026-04-04T10:20:00.000Z'
+                  updatedAt: '2026-04-04T11:30:00.000Z'
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '403':
+          description: Forbidden - ADMIN role required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Forbidden
+        '404':
+          description: Warehouse not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Warehouse not found
+        '409':
+          description: Warehouse code already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Warehouse code already exists
+    delete:
+      summary: Delete warehouse
+      description: Requires authentication and ADMIN role.
+      tags: [Warehouses]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdParam'
+      responses:
+        '204':
+          description: Warehouse deleted successfully
+        '401':
+          description: Unauthorized or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '403':
+          description: Forbidden - ADMIN role required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Forbidden
+        '404':
+          description: Warehouse not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Warehouse not found
+
+  /inventory:
+    get:
+      summary: Get inventory list
+      description: Requires authentication.
+      tags: [Inventory]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Inventory list returned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetInventoryResponse'
+              example:
+                inventory:
+                  - id: cmnirggjo0005v9mgoqn53con
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    onHand: 77
+                    reserved: 2
+                    createdAt: '2026-04-03T10:28:32.580Z'
+                    updatedAt: '2026-04-03T16:29:15.373Z'
+                    available: 75
+                    product:
+                      id: cmnipustk0001v9mghxodgqvm
+                      name: Demo Product
+                      sku: DEMO-SKU-001
+                      unit: pcs
+                    warehouse:
+                      id: cmnipvcsv0003v9mgdphtlyvb
+                      name: Main Warehouse
+                      code: WH-A
+                      location: Adelaide
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+
+  /inventory/transactions:
+    get:
+      summary: Get inventory transactions
+      description: Requires authentication.
+      tags: [Inventory]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Inventory transactions returned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTransactionsResponse'
+              example:
+                transactions:
+                  - id: cmnj4cc8d0007v9kg2de8ujjj
+                    type: COMMIT_OUT
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    sourceWarehouseId: null
+                    targetWarehouseId: null
+                    quantity: 3
+                    beforeOnHand: 80
+                    afterOnHand: 77
+                    beforeReserved: 5
+                    afterReserved: 2
+                    reference: COM-TEST
+                    note: Commit test
+                    createdById: cmnipnkxg0000v9mgm9e326um
+                    createdAt: '2026-04-03T16:29:15.373Z'
+                    product:
+                      id: cmnipustk0001v9mghxodgqvm
+                      name: Demo Product
+                      sku: DEMO-SKU-001
+                    warehouse:
+                      id: cmnipvcsv0003v9mgdphtlyvb
+                      name: Main Warehouse
+                      code: WH-A
+                    sourceWarehouse: null
+                    targetWarehouse: null
+                    createdBy:
+                      id: cmnipnkxg0000v9mgm9e326um
+                      email: staff@example.com
+                      role: STAFF
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+
+  /inventory/increase:
+    post:
+      summary: Increase inventory
+      description: Requires authentication.
+      tags: [Inventory]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IncreaseInventoryInput'
+            example:
+              productId: cmnipustk0001v9mghxodgqvm
+              warehouseId: cmnipvcsv0003v9mgdphtlyvb
+              quantity: 20
+              reference: PO-001
+              note: Initial stock in
+      responses:
+        '200':
+          description: Inventory increased successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryMutationResponse'
+              example:
+                message: Inventory increased successfully
+                data:
+                  inventory:
+                    id: cmnirggjo0005v9mgoqn53con
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    onHand: 100
+                    reserved: 0
+                    createdAt: '2026-04-03T10:28:32.580Z'
+                    updatedAt: '2026-04-03T10:40:00.000Z'
+                    available: 100
+                  transaction:
+                    id: cmnstockin001
+                    type: STOCK_IN
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    sourceWarehouseId: null
+                    targetWarehouseId: null
+                    quantity: 20
+                    beforeOnHand: 80
+                    afterOnHand: 100
+                    beforeReserved: 0
+                    afterReserved: 0
+                    reference: PO-001
+                    note: Initial stock in
+                    createdById: cmnipnkxg0000v9mgm9e326um
+                    createdAt: '2026-04-03T10:40:00.000Z'
+        '400':
+          description: Validation failed or invalid quantity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Validation failed
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '404':
+          description: Product or warehouse not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Product not found
+
+  /inventory/decrease:
+    post:
+      summary: Decrease inventory
+      description: Requires authentication.
+      tags: [Inventory]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecreaseInventoryInput'
+            example:
+              productId: cmnipustk0001v9mghxodgqvm
+              warehouseId: cmnipvcsv0003v9mgdphtlyvb
+              quantity: 5
+              reference: SO-001
+              note: Customer order
+      responses:
+        '200':
+          description: Inventory decreased successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryMutationResponse'
+              example:
+                message: Inventory decreased successfully
+                data:
+                  inventory:
+                    id: cmnirggjo0005v9mgoqn53con
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    onHand: 75
+                    reserved: 0
+                    createdAt: '2026-04-03T10:28:32.580Z'
+                    updatedAt: '2026-04-03T11:00:00.000Z'
+                    available: 75
+                  transaction:
+                    id: cmnstockout001
+                    type: STOCK_OUT
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    sourceWarehouseId: null
+                    targetWarehouseId: null
+                    quantity: 5
+                    beforeOnHand: 80
+                    afterOnHand: 75
+                    beforeReserved: 0
+                    afterReserved: 0
+                    reference: SO-001
+                    note: Customer order
+                    createdById: cmnipnkxg0000v9mgm9e326um
+                    createdAt: '2026-04-03T11:00:00.000Z'
+        '400':
+          description: Validation failed or insufficient available stock
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Insufficient available stock
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '404':
+          description: Product, warehouse, or inventory record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Inventory record not found
+
+  /inventory/transfer:
+    post:
+      summary: Transfer inventory between warehouses
+      description: Requires authentication.
+      tags: [Inventory]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferInventoryInput'
+            example:
+              productId: cmnipustk0001v9mghxodgqvm
+              sourceWarehouseId: cmnipvcsv0003v9mgdphtlyvb
+              targetWarehouseId: cmnipv5xq0002v9mgpxi5fsoa
+              quantity: 10
+              reference: TR-001
+              note: Rebalance stock
+      responses:
+        '200':
+          description: Inventory transferred successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferInventoryResponse'
+              example:
+                message: Inventory transferred successfully
+                data:
+                  sourceInventory:
+                    id: cmsourceinventory001
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    onHand: 70
+                    reserved: 0
+                    createdAt: '2026-04-03T10:28:32.580Z'
+                    updatedAt: '2026-04-03T12:00:00.000Z'
+                    available: 70
+                  targetInventory:
+                    id: cmtargetinventory001
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipv5xq0002v9mgpxi5fsoa
+                    onHand: 40
+                    reserved: 0
+                    createdAt: '2026-04-03T10:28:32.580Z'
+                    updatedAt: '2026-04-03T12:00:00.000Z'
+                    available: 40
+                  transaction:
+                    id: cmntransfer001
+                    type: TRANSFER
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    sourceWarehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    targetWarehouseId: cmnipv5xq0002v9mgpxi5fsoa
+                    quantity: 10
+                    beforeOnHand: 80
+                    afterOnHand: 70
+                    beforeReserved: 0
+                    afterReserved: 0
+                    reference: TR-001
+                    note: Rebalance stock
+                    createdById: cmnipnkxg0000v9mgm9e326um
+                    createdAt: '2026-04-03T12:00:00.000Z'
+        '400':
+          description: Validation failed or invalid transfer request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Source and target warehouse cannot be the same
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '404':
+          description: Product, warehouse, or source inventory record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Source inventory record not found
+
+  /inventory/reserve:
+    post:
+      summary: Reserve inventory
+      description: Requires authentication. Reserve available stock without changing physical on-hand quantity.
+      tags: [Inventory]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReserveInventoryInput'
+            example:
+              productId: cmnipustk0001v9mghxodgqvm
+              warehouseId: cmnipvcsv0003v9mgdphtlyvb
+              quantity: 10
+              reference: RES-001
+              note: Reserve stock for order #1001
+      responses:
+        '200':
+          description: Inventory reserved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryMutationResponse'
+              example:
+                message: Inventory reserved successfully
+                data:
+                  inventory:
+                    id: cmnirggjo0005v9mgoqn53con
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    onHand: 80
+                    reserved: 10
+                    createdAt: '2026-04-03T10:28:32.580Z'
+                    updatedAt: '2026-04-03T16:28:49.207Z'
+                    available: 70
+                  transaction:
+                    id: cmnj4bs1i0003v9kg31mo6m83
+                    type: RESERVE
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    sourceWarehouseId: null
+                    targetWarehouseId: null
+                    quantity: 10
+                    beforeOnHand: 80
+                    afterOnHand: 80
+                    beforeReserved: 0
+                    afterReserved: 10
+                    reference: RES-001
+                    note: Reserve stock for order #1001
+                    createdById: cmnipnkxg0000v9mgm9e326um
+                    createdAt: '2026-04-03T16:28:49.207Z'
+        '400':
+          description: Validation failed or insufficient available stock
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Insufficient available stock to reserve
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '404':
+          description: Product, warehouse, or inventory record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Inventory record not found
+
+  /inventory/release:
+    post:
+      summary: Release reserved inventory
+      description: Requires authentication. Release previously reserved stock without changing physical on-hand quantity.
+      tags: [Inventory]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReleaseInventoryInput'
+            example:
+              productId: cmnipustk0001v9mghxodgqvm
+              warehouseId: cmnipvcsv0003v9mgdphtlyvb
+              quantity: 5
+              reference: REL-001
+              note: Order cancelled
+      responses:
+        '200':
+          description: Inventory released successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryMutationResponse'
+              example:
+                message: Inventory released successfully
+                data:
+                  inventory:
+                    id: cmnirggjo0005v9mgoqn53con
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    onHand: 80
+                    reserved: 5
+                    createdAt: '2026-04-03T10:28:32.580Z'
+                    updatedAt: '2026-04-03T16:28:59.500Z'
+                    available: 75
+                  transaction:
+                    id: cmnj4bzzg0005v9kg9r0kdudn
+                    type: RELEASE
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    sourceWarehouseId: null
+                    targetWarehouseId: null
+                    quantity: 5
+                    beforeOnHand: 80
+                    afterOnHand: 80
+                    beforeReserved: 10
+                    afterReserved: 5
+                    reference: REL-001
+                    note: Order cancelled
+                    createdById: cmnipnkxg0000v9mgm9e326um
+                    createdAt: '2026-04-03T16:28:59.500Z'
+        '400':
+          description: Validation failed or release quantity exceeds reserved stock
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Cannot release more than reserved stock
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '404':
+          description: Product, warehouse, or inventory record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Inventory record not found
+
+  /inventory/commit-reserved:
+    post:
+      summary: Commit reserved inventory to stock out
+      description: Requires authentication. Convert reserved stock into an actual stock-out operation by decreasing both reserved and on-hand quantities.
+      tags: [Inventory]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommitReservedInventoryInput'
+            example:
+              productId: cmnipustk0001v9mghxodgqvm
+              warehouseId: cmnipvcsv0003v9mgdphtlyvb
+              quantity: 3
+              reference: COM-001
+              note: Ship reserved stock
+      responses:
+        '200':
+          description: Reserved inventory committed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryMutationResponse'
+              example:
+                message: Reserved inventory committed successfully
+                data:
+                  inventory:
+                    id: cmnirggjo0005v9mgoqn53con
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    onHand: 77
+                    reserved: 2
+                    createdAt: '2026-04-03T10:28:32.580Z'
+                    updatedAt: '2026-04-03T16:29:15.373Z'
+                    available: 75
+                  transaction:
+                    id: cmnj4cc8d0007v9kg2de8ujjj
+                    type: COMMIT_OUT
+                    productId: cmnipustk0001v9mghxodgqvm
+                    warehouseId: cmnipvcsv0003v9mgdphtlyvb
+                    sourceWarehouseId: null
+                    targetWarehouseId: null
+                    quantity: 3
+                    beforeOnHand: 80
+                    afterOnHand: 77
+                    beforeReserved: 5
+                    afterReserved: 2
+                    reference: COM-001
+                    note: Ship reserved stock
+                    createdById: cmnipnkxg0000v9mgm9e326um
+                    createdAt: '2026-04-03T16:29:15.373Z'
+        '400':
+          description: Validation failed or commit quantity exceeds reserved stock
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Cannot commit more than reserved stock
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingHeader:
+                  value:
+                    message: Missing or invalid authorization header
+                invalidToken:
+                  value:
+                    message: Invalid or expired token
+        '404':
+          description: Product, warehouse, or inventory record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                message: Inventory record not found
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Send a JWT access token in the Authorization header as `Bearer <token>`.
+
+  parameters:
+    IdParam:
+      name: id
+      in: path
+      required: true
+      description: Resource ID
+      schema:
+        type: string
+
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+      required: [status]
+
+    ErrorResponse:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+
+    Role:
+      type: string
+      enum: [ADMIN, STAFF]
+
+    UserPublic:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/Role'
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, email, role, createdAt]
+
+    UserProfile:
+      allOf:
+        - $ref: '#/components/schemas/UserPublic'
+        - type: object
+          properties:
+            updatedAt:
+              type: string
+              format: date-time
+          required: [updatedAt]
+
+    RegisterInput:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 6
+        role:
+          $ref: '#/components/schemas/Role'
+
+    LoginInput:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+
+    RegisterResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        user:
+          $ref: '#/components/schemas/UserPublic'
+      required: [message, user]
+
+    LoginResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        token:
+          type: string
+        user:
+          $ref: '#/components/schemas/UserPublic'
+      required: [message, token, user]
+
+    Product:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        sku:
+          type: string
+        description:
+          type: string
+          nullable: true
+        unit:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, name, sku, createdAt, updatedAt]
+
+    CreateProductInput:
+      type: object
+      required: [name, sku]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        sku:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        unit:
+          type: string
+
+    UpdateProductInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+        sku:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        unit:
+          type: string
+
+    ProductMutationResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        product:
+          $ref: '#/components/schemas/Product'
+      required: [message, product]
+
+    GetProductsResponse:
+      type: object
+      properties:
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+      required: [products]
+
+    GetProductResponse:
+      type: object
+      properties:
+        product:
+          $ref: '#/components/schemas/Product'
+      required: [product]
+
+    Warehouse:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        code:
+          type: string
+        location:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, name, code, createdAt, updatedAt]
+
+    CreateWarehouseInput:
+      type: object
+      required: [name, code]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        code:
+          type: string
+          minLength: 1
+        location:
+          type: string
+
+    UpdateWarehouseInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+        code:
+          type: string
+          minLength: 1
+        location:
+          type: string
+
+    WarehouseMutationResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        warehouse:
+          $ref: '#/components/schemas/Warehouse'
+      required: [message, warehouse]
+
+    GetWarehousesResponse:
+      type: object
+      properties:
+        warehouses:
+          type: array
+          items:
+            $ref: '#/components/schemas/Warehouse'
+      required: [warehouses]
+
+    GetWarehouseResponse:
+      type: object
+      properties:
+        warehouse:
+          $ref: '#/components/schemas/Warehouse'
+      required: [warehouse]
+
+    InventoryType:
+      type: string
+      enum:
+        - STOCK_IN
+        - STOCK_OUT
+        - TRANSFER
+        - ADJUSTMENT
+        - RESERVE
+        - RELEASE
+        - COMMIT_OUT
+
+    InventoryRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        productId:
+          type: string
+        warehouseId:
+          type: string
+        onHand:
+          type: integer
+        reserved:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        available:
+          type: integer
+      required:
+        - id
+        - productId
+        - warehouseId
+        - onHand
+        - reserved
+        - createdAt
+        - updatedAt
+        - available
+
+    ProductSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        sku:
+          type: string
+        unit:
+          type: string
+          nullable: true
+      required: [id, name, sku]
+
+    WarehouseSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        code:
+          type: string
+        location:
+          type: string
+          nullable: true
+      required: [id, name, code]
+
+    WarehouseLiteSummary:
+      type: object
+      nullable: true
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        code:
+          type: string
+
+    UserSummary:
+      type: object
+      nullable: true
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/Role'
+
+    InventoryTransaction:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          $ref: '#/components/schemas/InventoryType'
+        productId:
+          type: string
+        warehouseId:
+          type: string
+          nullable: true
+        sourceWarehouseId:
+          type: string
+          nullable: true
+        targetWarehouseId:
+          type: string
+          nullable: true
+        quantity:
+          type: integer
+        beforeOnHand:
+          type: integer
+        afterOnHand:
+          type: integer
+        beforeReserved:
+          type: integer
+        afterReserved:
+          type: integer
+        reference:
+          type: string
+          nullable: true
+        note:
+          type: string
+          nullable: true
+        createdById:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - type
+        - productId
+        - quantity
+        - beforeOnHand
+        - afterOnHand
+        - beforeReserved
+        - afterReserved
+        - createdById
+        - createdAt
+
+    InventoryTransactionWithRelations:
+      allOf:
+        - $ref: '#/components/schemas/InventoryTransaction'
+        - type: object
+          properties:
+            product:
+              type: object
+              properties:
+                id:
+                  type: string
+                name:
+                  type: string
+                sku:
+                  type: string
+            warehouse:
+              $ref: '#/components/schemas/WarehouseLiteSummary'
+            sourceWarehouse:
+              $ref: '#/components/schemas/WarehouseLiteSummary'
+            targetWarehouse:
+              $ref: '#/components/schemas/WarehouseLiteSummary'
+            createdBy:
+              $ref: '#/components/schemas/UserSummary'
+
+    InventoryWithRelations:
+      allOf:
+        - $ref: '#/components/schemas/InventoryRecord'
+        - type: object
+          properties:
+            product:
+              $ref: '#/components/schemas/ProductSummary'
+            warehouse:
+              $ref: '#/components/schemas/WarehouseSummary'
+
+    InventoryMutationData:
+      type: object
+      properties:
+        inventory:
+          $ref: '#/components/schemas/InventoryRecord'
+        transaction:
+          $ref: '#/components/schemas/InventoryTransaction'
+      required: [inventory, transaction]
+
+    InventoryMutationResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        data:
+          $ref: '#/components/schemas/InventoryMutationData'
+      required: [message, data]
+
+    TransferInventoryData:
+      type: object
+      properties:
+        sourceInventory:
+          $ref: '#/components/schemas/InventoryRecord'
+        targetInventory:
+          $ref: '#/components/schemas/InventoryRecord'
+        transaction:
+          $ref: '#/components/schemas/InventoryTransaction'
+      required: [sourceInventory, targetInventory, transaction]
+
+    TransferInventoryResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        data:
+          $ref: '#/components/schemas/TransferInventoryData'
+      required: [message, data]
+
+    GetInventoryResponse:
+      type: object
+      properties:
+        inventory:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryWithRelations'
+      required: [inventory]
+
+    GetTransactionsResponse:
+      type: object
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryTransactionWithRelations'
+      required: [transactions]
+
+    IncreaseInventoryInput:
+      type: object
+      required:
+        - productId
+        - warehouseId
+        - quantity
+      properties:
+        productId:
+          type: string
+          description: Product ID
+        warehouseId:
+          type: string
+          description: Warehouse ID
+        quantity:
+          type: integer
+          minimum: 1
+          description: Quantity to add
+        reference:
+          type: string
+          description: Optional business reference
+        note:
+          type: string
+          description: Optional note
+
+    DecreaseInventoryInput:
+      type: object
+      required:
+        - productId
+        - warehouseId
+        - quantity
+      properties:
+        productId:
+          type: string
+          description: Product ID
+        warehouseId:
+          type: string
+          description: Warehouse ID
+        quantity:
+          type: integer
+          minimum: 1
+          description: Quantity to subtract from available stock
+        reference:
+          type: string
+        note:
+          type: string
+
+    TransferInventoryInput:
+      type: object
+      required:
+        - productId
+        - sourceWarehouseId
+        - targetWarehouseId
+        - quantity
+      properties:
+        productId:
+          type: string
+        sourceWarehouseId:
+          type: string
+        targetWarehouseId:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        reference:
+          type: string
+        note:
+          type: string
+
+    ReserveInventoryInput:
+      type: object
+      required:
+        - productId
+        - warehouseId
+        - quantity
+      properties:
+        productId:
+          type: string
+          description: Product ID
+        warehouseId:
+          type: string
+          description: Warehouse ID
+        quantity:
+          type: integer
+          minimum: 1
+          description: Quantity to reserve from available stock
+        reference:
+          type: string
+          description: Optional business reference
+        note:
+          type: string
+          description: Optional note
+
+    ReleaseInventoryInput:
+      type: object
+      required:
+        - productId
+        - warehouseId
+        - quantity
+      properties:
+        productId:
+          type: string
+          description: Product ID
+        warehouseId:
+          type: string
+          description: Warehouse ID
+        quantity:
+          type: integer
+          minimum: 1
+          description: Quantity to release from reserved stock
+        reference:
+          type: string
+          description: Optional business reference
+        note:
+          type: string
+          description: Optional note
+
+    CommitReservedInventoryInput:
+      type: object
+      required:
+        - productId
+        - warehouseId
+        - quantity
+      properties:
+        productId:
+          type: string
+          description: Product ID
+        warehouseId:
+          type: string
+          description: Warehouse ID
+        quantity:
+          type: integer
+          minimum: 1
+          description: Quantity to convert from reserved stock into actual stock out
+        reference:
+          type: string
+          description: Optional business reference
+        note:
+          type: string
+          description: Optional note

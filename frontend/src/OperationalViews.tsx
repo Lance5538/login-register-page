@@ -1,5 +1,17 @@
-import { useDeferredValue, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, Dispatch, SetStateAction } from 'react';
+import {
+  approveOrder,
+  createWorkspaceUser,
+  deleteWorkspaceUser,
+  createInboundOrder,
+  createOutboundOrder,
+  rejectOrder,
+  updateInboundOrder,
+  updateOutboundOrder,
+  updateWorkspaceUserProfile,
+  updateWorkspaceUserRole,
+} from './api';
 import { getLocaleTag, type AuthLocale, type ModulePage, type Route, type WorkspaceRoute } from './content';
 import * as ops from './operations';
 import { downloadWorkbook, readSpreadsheetFile, sanitizeSpreadsheetValue, type SpreadsheetRow } from './spreadsheet';
@@ -14,6 +26,8 @@ type OperationalModuleViewProps = {
   setSelections: Dispatch<SetStateAction<ops.OperationalSelections>>;
   onNavigate: (route: Route) => void;
   currentUser: ops.UserSession;
+  sessionToken: string;
+  onRefreshWorkspaceData: (options?: { selections?: Partial<ops.OperationalSelections> }) => Promise<void>;
 };
 
 type FilterOption = {
@@ -466,6 +480,25 @@ function orderModuleRoutes(module: OrderModule) {
       };
 }
 
+function toBackendLineItems(lineItems: ops.OrderLineItem[]) {
+  return lineItems
+    .filter((lineItem) => lineItem.productId && Number(lineItem.quantity) > 0)
+    .map((lineItem) => ({
+      productId: lineItem.productId,
+      quantity: Number(lineItem.quantity),
+      notes: lineItem.notes || undefined,
+    }));
+}
+
+function buildApprovalSelectionKey(module: OrderModule, id: string) {
+  return `${module}:${id}`;
+}
+
+function optionalText(value: string) {
+  const normalized = value.trim();
+  return normalized ? normalized : undefined;
+}
+
 export default function OperationalModuleView(props: OperationalModuleViewProps) {
   if (props.route === 'inventory-list' || props.route === 'inventory-detail') {
     return <InventoryWorkspace {...props} />;
@@ -789,13 +822,14 @@ function InventoryWorkspace({ store, setStore, selections, setSelections, onNavi
 function OrderWorkspace({
   module,
   store,
-  setStore,
   selections,
   setSelections,
   onNavigate,
   route,
   locale,
   currentUser,
+  sessionToken,
+  onRefreshWorkspaceData,
 }: OperationalModuleViewProps & { module: OrderModule }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [search, setSearch] = useState('');
@@ -891,13 +925,13 @@ function OrderWorkspace({
     }
 
     const rows = await readSpreadsheetFile(file);
-    let workingStore = store;
     let successCount = 0;
     const errors: string[] = [];
+    let lastCreatedId = '';
 
-    rows.forEach((row, index) => {
-      const warehouse = matchWarehouse(workingStore, row.Warehouse ?? '');
-      const parsedLineItems = parseImportedLineItems(row['Line Items'] ?? row['Product Lines'] ?? '', workingStore, locale);
+    for (const [index, row] of rows.entries()) {
+      const warehouse = matchWarehouse(store, row.Warehouse ?? '');
+      const parsedLineItems = parseImportedLineItems(row['Line Items'] ?? row['Product Lines'] ?? '', store, locale);
 
       if (!warehouse || parsedLineItems.errors.length > 0) {
         errors.push(
@@ -907,59 +941,85 @@ function OrderWorkspace({
             `第 ${index + 2} 行：${warehouse ? parsedLineItems.errors.join(' ') : '未找到仓库。'}`,
           ),
         );
-        return;
+        continue;
       }
 
       if (module === 'inbound') {
         if (!row.Supplier) {
           errors.push(copyByLocale(locale, `Row ${index + 2}: Supplier is required.`, `第 ${index + 2} 行：供应商必填。`));
-          return;
+          continue;
         }
 
-        const result = ops.saveInboundOrder(
-          workingStore,
-          {
-            inboundNo: row['Inbound No'] ?? '',
+        try {
+          const result = await createInboundOrder(sessionToken, {
+            inboundNo: optionalText(row['Inbound No'] ?? ''),
             warehouseId: warehouse.id,
             supplierName: row.Supplier,
-            referenceNo: row['Reference No'] ?? '',
+            referenceNo: optionalText(row['Reference No'] ?? ''),
             plannedDate: row['Planned Date'] ?? ops.todayInputValue(),
-            notes: row.Notes ?? '',
-            lineItems: parsedLineItems.lineItems,
-          },
-          { submitForApproval: true, actor: currentUser },
-        );
+            notes: optionalText(row.Notes ?? ''),
+            submitForApproval: true,
+            lineItems: toBackendLineItems(parsedLineItems.lineItems),
+          });
 
-        workingStore = result.store;
-        successCount += 1;
-        return;
+          lastCreatedId = result.order.id;
+          successCount += 1;
+          continue;
+        } catch (error) {
+          errors.push(
+            copyByLocale(
+              locale,
+              `Row ${index + 2}: ${error instanceof Error ? error.message : 'Failed to import inbound order.'}`,
+              `第 ${index + 2} 行：${error instanceof Error ? error.message : '导入入库单失败。'}`,
+            ),
+          );
+          continue;
+        }
       }
 
       if (!row.Destination) {
         errors.push(copyByLocale(locale, `Row ${index + 2}: Destination is required.`, `第 ${index + 2} 行：目的地必填。`));
-        return;
+        continue;
       }
 
-      const result = ops.saveOutboundOrder(
-        workingStore,
-        {
-          outboundNo: row['Outbound No'] ?? '',
+      try {
+        const result = await createOutboundOrder(sessionToken, {
+          outboundNo: optionalText(row['Outbound No'] ?? ''),
           warehouseId: warehouse.id,
           destination: row.Destination,
-          carrier: row.Carrier ?? '',
+          carrier: optionalText(row.Carrier ?? ''),
           shipmentDate: row['Shipment Date'] ?? ops.todayInputValue(),
-          notes: row.Notes ?? '',
-          lineItems: parsedLineItems.lineItems,
-        },
-        { submitForApproval: true, actor: currentUser },
-      );
+          notes: optionalText(row.Notes ?? ''),
+          submitForApproval: true,
+          lineItems: toBackendLineItems(parsedLineItems.lineItems),
+        });
 
-      workingStore = result.store;
-      successCount += 1;
-    });
+        lastCreatedId = result.order.id;
+        successCount += 1;
+      } catch (error) {
+        errors.push(
+          copyByLocale(
+            locale,
+            `Row ${index + 2}: ${error instanceof Error ? error.message : 'Failed to import outbound order.'}`,
+            `第 ${index + 2} 行：${error instanceof Error ? error.message : '导入出库单失败。'}`,
+          ),
+        );
+      }
+    }
 
     if (successCount > 0) {
-      setStore(workingStore);
+      await onRefreshWorkspaceData({
+        selections:
+          module === 'inbound'
+            ? {
+                inboundId: lastCreatedId,
+                approvalKey: lastCreatedId ? buildApprovalSelectionKey('inbound', lastCreatedId) : undefined,
+              }
+            : {
+                outboundId: lastCreatedId,
+                approvalKey: lastCreatedId ? buildApprovalSelectionKey('outbound', lastCreatedId) : undefined,
+              },
+      });
     }
 
     setFeedback({
@@ -1035,17 +1095,47 @@ function OrderWorkspace({
     ]);
   }
 
-  function quickApprove(id: string) {
-    setStore((current) => ops.approveOrder(current, module, id, currentUser));
+  async function quickApprove(id: string) {
+    try {
+      await approveOrder(sessionToken, module, id);
+      await onRefreshWorkspaceData({
+        selections: {
+          inboundId: module === 'inbound' ? id : undefined,
+          outboundId: module === 'outbound' ? id : undefined,
+          approvalKey: buildApprovalSelectionKey(module, id),
+        },
+      });
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        title: copyByLocale(locale, 'Approval failed', '审批失败'),
+        detail: error instanceof Error ? error.message : copyByLocale(locale, 'Unable to approve this order.', '无法审批该订单。'),
+      });
+    }
   }
 
-  function submitReject() {
+  async function submitReject() {
     if (!detailRecord) {
       return;
     }
 
-    setStore((current) => ops.rejectOrder(current, module, detailRecord.id, rejectReason, currentUser));
-    setRejectReason('');
+    try {
+      await rejectOrder(sessionToken, module, detailRecord.id, rejectReason);
+      await onRefreshWorkspaceData({
+        selections: {
+          inboundId: module === 'inbound' ? detailRecord.id : undefined,
+          outboundId: module === 'outbound' ? detailRecord.id : undefined,
+          approvalKey: buildApprovalSelectionKey(module, detailRecord.id),
+        },
+      });
+      setRejectReason('');
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        title: copyByLocale(locale, 'Rejection failed', '驳回失败'),
+        detail: error instanceof Error ? error.message : copyByLocale(locale, 'Unable to reject this order.', '无法驳回该订单。'),
+      });
+    }
   }
 
   return (
@@ -1271,13 +1361,13 @@ function OrderWorkspace({
 function OrderFormWorkspace({
   module,
   store,
-  setStore,
   selections,
   setSelections,
   onNavigate,
   route,
   locale,
-  currentUser,
+  sessionToken,
+  onRefreshWorkspaceData,
 }: OperationalModuleViewProps & { module: OrderModule }) {
   const sourceRecord =
     module === 'inbound'
@@ -1369,7 +1459,7 @@ function OrderFormWorkspace({
     return errors;
   }
 
-  function save(submitForApproval: boolean) {
+  async function save(submitForApproval: boolean) {
     const errors = validate();
 
     if (errors.length > 0) {
@@ -1382,28 +1472,64 @@ function OrderFormWorkspace({
       return;
     }
 
-    if (module === 'inbound') {
-      const result = ops.saveInboundOrder(store, formData as ops.InboundFormData, {
-        existingId: sourceRecord && 'supplierName' in sourceRecord ? sourceRecord.id : undefined,
+    try {
+      if (module === 'inbound') {
+        const payload = {
+          inboundNo: optionalText((formData as ops.InboundFormData).inboundNo),
+          warehouseId: formData.warehouseId,
+          supplierName: (formData as ops.InboundFormData).supplierName,
+          referenceNo: optionalText((formData as ops.InboundFormData).referenceNo),
+          plannedDate: (formData as ops.InboundFormData).plannedDate,
+          notes: optionalText(formData.notes),
+          submitForApproval,
+          lineItems: toBackendLineItems(formData.lineItems),
+        };
+        const result =
+          sourceRecord && 'supplierName' in sourceRecord
+            ? await updateInboundOrder(sessionToken, sourceRecord.id, payload)
+            : await createInboundOrder(sessionToken, payload);
+
+        setSelections((current) => ({ ...current, inboundId: result.order.id }));
+        await onRefreshWorkspaceData({
+          selections: {
+            inboundId: result.order.id,
+            approvalKey: buildApprovalSelectionKey('inbound', result.order.id),
+          },
+        });
+        onNavigate('inbound-detail');
+        return;
+      }
+
+      const payload = {
+        outboundNo: optionalText((formData as ops.OutboundFormData).outboundNo),
+        warehouseId: formData.warehouseId,
+        destination: (formData as ops.OutboundFormData).destination,
+        carrier: optionalText((formData as ops.OutboundFormData).carrier),
+        shipmentDate: (formData as ops.OutboundFormData).shipmentDate,
+        notes: optionalText(formData.notes),
         submitForApproval,
-        actor: currentUser,
+        lineItems: toBackendLineItems(formData.lineItems),
+      };
+      const result =
+        sourceRecord && 'destination' in sourceRecord
+          ? await updateOutboundOrder(sessionToken, sourceRecord.id, payload)
+          : await createOutboundOrder(sessionToken, payload);
+
+      setSelections((current) => ({ ...current, outboundId: result.order.id }));
+      await onRefreshWorkspaceData({
+        selections: {
+          outboundId: result.order.id,
+          approvalKey: buildApprovalSelectionKey('outbound', result.order.id),
+        },
       });
-
-      setStore(result.store);
-      setSelections((current) => ({ ...current, inboundId: result.selectionId }));
-      onNavigate('inbound-detail');
-      return;
+      onNavigate('outbound-detail');
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        title: text.cannotSave,
+        detail: error instanceof Error ? error.message : text.resolveIssues,
+      });
     }
-
-    const result = ops.saveOutboundOrder(store, formData as ops.OutboundFormData, {
-      existingId: sourceRecord && 'destination' in sourceRecord ? sourceRecord.id : undefined,
-      submitForApproval,
-      actor: currentUser,
-    });
-
-    setStore(result.store);
-    setSelections((current) => ({ ...current, outboundId: result.selectionId }));
-    onNavigate('outbound-detail');
   }
 
   return (
@@ -1555,7 +1681,7 @@ function OrderFormWorkspace({
   );
 }
 
-function ApprovalWorkspace({ store, setStore, selections, setSelections, onNavigate, locale, currentUser }: OperationalModuleViewProps) {
+function ApprovalWorkspace({ store, selections, setSelections, onNavigate, locale, sessionToken, onRefreshWorkspaceData }: OperationalModuleViewProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [search, setSearch] = useState('');
   const [filterValue, setFilterValue] = useState('all');
@@ -1616,21 +1742,52 @@ function ApprovalWorkspace({ store, setStore, selections, setSelections, onNavig
     filteredQueue[0] ??
     queue[0];
 
-  function approve(item: ops.ApprovalQueueItem) {
+  async function approve(item: ops.ApprovalQueueItem) {
     updateApprovalSelection(setSelections, item);
-    setStore((current) => ops.approveOrder(current, item.module === 'Inbound' ? 'inbound' : 'outbound', item.id, currentUser));
+
+    try {
+      const module = item.module === 'Inbound' ? 'inbound' : 'outbound';
+      await approveOrder(sessionToken, module, item.id);
+      await onRefreshWorkspaceData({
+        selections: {
+          inboundId: module === 'inbound' ? item.id : undefined,
+          outboundId: module === 'outbound' ? item.id : undefined,
+          approvalKey: item.key,
+        },
+      });
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        title: copyByLocale(locale, 'Approval failed', '审批失败'),
+        detail: error instanceof Error ? error.message : copyByLocale(locale, 'Unable to approve this order.', '无法审批该订单。'),
+      });
+    }
   }
 
-  function rejectSelected() {
+  async function rejectSelected() {
     if (!selectedItem) {
       return;
     }
 
     updateApprovalSelection(setSelections, selectedItem);
-    setStore((current) =>
-      ops.rejectOrder(current, selectedItem.module === 'Inbound' ? 'inbound' : 'outbound', selectedItem.id, rejectReason, currentUser),
-    );
-    setRejectReason('');
+    try {
+      const module = selectedItem.module === 'Inbound' ? 'inbound' : 'outbound';
+      await rejectOrder(sessionToken, module, selectedItem.id, rejectReason);
+      await onRefreshWorkspaceData({
+        selections: {
+          inboundId: module === 'inbound' ? selectedItem.id : undefined,
+          outboundId: module === 'outbound' ? selectedItem.id : undefined,
+          approvalKey: selectedItem.key,
+        },
+      });
+      setRejectReason('');
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        title: copyByLocale(locale, 'Rejection failed', '驳回失败'),
+        detail: error instanceof Error ? error.message : copyByLocale(locale, 'Unable to reject this order.', '无法驳回该订单。'),
+      });
+    }
   }
 
   async function handleImport(event: ChangeEvent<HTMLInputElement>) {
@@ -1641,42 +1798,62 @@ function ApprovalWorkspace({ store, setStore, selections, setSelections, onNavig
     }
 
     const rows = await readSpreadsheetFile(file);
-    let workingStore = store;
     let successCount = 0;
     const errors: string[] = [];
+    let lastSelection: Partial<ops.OperationalSelections> = {};
 
-    rows.forEach((row, index) => {
+    for (const [index, row] of rows.entries()) {
       const module = (row.Module ?? '').toLowerCase();
       const orderNo = row['Order No'] ?? '';
       const decision = (row.Decision ?? '').toLowerCase();
       const reason = row.Reason ?? '';
 
-      const queueItem = ops.buildApprovalQueue(workingStore).find(
+      const queueItem = ops.buildApprovalQueue(store).find(
         (item) => item.orderNo.toLowerCase() === orderNo.toLowerCase() && item.module.toLowerCase() === module,
       );
 
       if (!queueItem) {
         errors.push(copyByLocale(locale, `Row ${index + 2}: matching approval record not found.`, `第 ${index + 2} 行：未找到匹配的审批记录。`));
-        return;
+        continue;
       }
 
-      if (decision === 'approve' || decision === 'approved') {
-        workingStore = ops.approveOrder(workingStore, queueItem.module === 'Inbound' ? 'inbound' : 'outbound', queueItem.id, currentUser);
-        successCount += 1;
-        return;
-      }
+      try {
+        if (decision === 'approve' || decision === 'approved') {
+          await approveOrder(sessionToken, module === 'inbound' ? 'inbound' : 'outbound', queueItem.id);
+          lastSelection = {
+            inboundId: module === 'inbound' ? queueItem.id : undefined,
+            outboundId: module === 'outbound' ? queueItem.id : undefined,
+            approvalKey: queueItem.key,
+          };
+          successCount += 1;
+          continue;
+        }
 
-      if (decision === 'reject' || decision === 'rejected') {
-        workingStore = ops.rejectOrder(workingStore, queueItem.module === 'Inbound' ? 'inbound' : 'outbound', queueItem.id, reason, currentUser);
-        successCount += 1;
-        return;
-      }
+        if (decision === 'reject' || decision === 'rejected') {
+          await rejectOrder(sessionToken, module === 'inbound' ? 'inbound' : 'outbound', queueItem.id, reason);
+          lastSelection = {
+            inboundId: module === 'inbound' ? queueItem.id : undefined,
+            outboundId: module === 'outbound' ? queueItem.id : undefined,
+            approvalKey: queueItem.key,
+          };
+          successCount += 1;
+          continue;
+        }
 
-      errors.push(copyByLocale(locale, `Row ${index + 2}: Decision must be approve or reject.`, `第 ${index + 2} 行：审批结果必须为通过或驳回。`));
-    });
+        errors.push(copyByLocale(locale, `Row ${index + 2}: Decision must be approve or reject.`, `第 ${index + 2} 行：审批结果必须为通过或驳回。`));
+      } catch (error) {
+        errors.push(
+          copyByLocale(
+            locale,
+            `Row ${index + 2}: ${error instanceof Error ? error.message : 'Approval request failed.'}`,
+            `第 ${index + 2} 行：${error instanceof Error ? error.message : '审批请求失败。'}`,
+          ),
+        );
+      }
+    }
 
     if (successCount > 0) {
-      setStore(workingStore);
+      await onRefreshWorkspaceData({ selections: lastSelection });
     }
 
     setFeedback({
@@ -1894,10 +2071,17 @@ function ApprovalWorkspace({ store, setStore, selections, setSelections, onNavig
   );
 }
 
-function UserManagementWorkspace({ store, setStore, selections, setSelections, locale, currentUser }: OperationalModuleViewProps) {
+function UserManagementWorkspace({ store, selections, setSelections, locale, currentUser, sessionToken, onRefreshWorkspaceData }: OperationalModuleViewProps) {
   const [search, setSearch] = useState('');
   const [filterValue, setFilterValue] = useState('all');
   const [feedback, setFeedback] = useState<ImportFeedback | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editPassword, setEditPassword] = useState('');
+  const [spotlightSection, setSpotlightSection] = useState<'details' | 'profile' | null>(null);
+  const [pendingScrollTarget, setPendingScrollTarget] = useState<'details' | 'profile' | null>(null);
+  const detailPanelRef = useRef<HTMLElement | null>(null);
+  const profileNameInputRef = useRef<HTMLInputElement | null>(null);
   const deferredSearch = useDeferredValue(search);
   const adminCount = store.users.filter((user) => user.role === 'Admin').length;
   const text = {
@@ -1915,9 +2099,11 @@ function UserManagementWorkspace({ store, setStore, selections, setSelections, l
     status: copyByLocale(locale, 'Status', '状态'),
     lastLogin: copyByLocale(locale, 'Last Login', '最近登录'),
     action: copyByLocale(locale, 'Action', '操作'),
-    view: copyByLocale(locale, 'View', '查看'),
+    view: copyByLocale(locale, 'Details', '详情'),
+    editProfile: copyByLocale(locale, 'Edit profile', '编辑资料'),
     makeAdmin: copyByLocale(locale, 'Make Admin', '设为管理员'),
     makeStaff: copyByLocale(locale, 'Set Staff', '设为员工'),
+    deleteUser: copyByLocale(locale, 'Delete', '删除'),
     selectedUser: copyByLocale(locale, 'Selected user', '当前用户'),
     appointedBy: copyByLocale(locale, 'Appointed By', '任命人'),
     appointedAt: copyByLocale(locale, 'Appointed At', '任命时间'),
@@ -1930,9 +2116,19 @@ function UserManagementWorkspace({ store, setStore, selections, setSelections, l
     selfGuard: copyByLocale(locale, 'The last admin cannot remove their own admin access.', '最后一位管理员不能移除自己的管理员权限。'),
     emptyList: copyByLocale(locale, 'No users matched the current filters.', '当前筛选条件下没有匹配的用户。'),
     inviteSuccess: copyByLocale(locale, 'Staff account created', '员工账号已创建'),
-    inviteDetail: copyByLocale(locale, 'A new staff profile was added to the mock workspace.', '新的员工账号已添加到当前 mock 工作区。'),
+    inviteDetail: copyByLocale(locale, 'Share the temporary password with the new team member and ask them to log in and change it.', '请把临时密码发给新员工，并提醒其登录后尽快修改。'),
+    inviteConfirm: copyByLocale(locale, 'Create a new invited staff account now?', '现在创建一个新的受邀员工账号吗？'),
     roleUpdated: copyByLocale(locale, 'Role updated', '角色已更新'),
-    roleUpdatedDetail: copyByLocale(locale, 'User permissions were updated in the mock workspace.', '当前 mock 工作区中的用户权限已更新。'),
+    roleUpdatedDetail: copyByLocale(locale, 'User permissions were updated from the backend.', '用户权限已通过后端更新。'),
+    deleteSuccess: copyByLocale(locale, 'Invited account deleted', '受邀账号已删除'),
+    deleteDetail: copyByLocale(locale, 'The invited account was removed successfully.', '该受邀账号已成功删除。'),
+    deleteConfirm: copyByLocale(locale, 'Delete this invited account? This cannot be undone.', '删除这个受邀账号吗？此操作无法撤销。'),
+    profileTitle: copyByLocale(locale, 'Account settings', '账户设置'),
+    password: copyByLocale(locale, 'Password', '密码'),
+    passwordHint: copyByLocale(locale, 'Leave blank to keep the current password.', '留空则保持当前密码不变。'),
+    saveProfile: copyByLocale(locale, 'Save changes', '保存修改'),
+    profileUpdated: copyByLocale(locale, 'User profile updated', '用户资料已更新'),
+    profileUpdatedDetail: copyByLocale(locale, 'Name, email, or password was updated successfully.', '姓名、邮箱或密码已更新。'),
   };
 
   const filteredUsers = useMemo(() => {
@@ -1951,28 +2147,141 @@ function UserManagementWorkspace({ store, setStore, selections, setSelections, l
     filteredUsers[0] ??
     store.users[0];
 
+  useEffect(() => {
+    setEditName(selectedUser?.name ?? '');
+    setEditEmail(selectedUser?.email ?? '');
+    setEditPassword('');
+  }, [selectedUser?.id]);
+
+  useEffect(() => {
+    if (!pendingScrollTarget || !selectedUser) {
+      return;
+    }
+
+    let clearTimer = 0;
+    const timer = window.setTimeout(() => {
+      detailPanelRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+
+      if (pendingScrollTarget === 'profile') {
+        profileNameInputRef.current?.focus();
+        profileNameInputRef.current?.select();
+      }
+
+      setSpotlightSection(pendingScrollTarget);
+      clearTimer = window.setTimeout(() => {
+        setSpotlightSection((current) => (current === pendingScrollTarget ? null : current));
+      }, 1800);
+    }, 40);
+
+    setPendingScrollTarget(null);
+
+    return () => {
+      window.clearTimeout(timer);
+      if (clearTimer) {
+        window.clearTimeout(clearTimer);
+      }
+    };
+  }, [pendingScrollTarget, selectedUser]);
+
   function selectUser(userId: string) {
     setSelections((current) => ({ ...current, userId }));
   }
 
-  function inviteStaff() {
-    const nextIndex = store.users.length + 1;
-    const result = ops.registerWorkspaceUser(
-      store,
-      {
-        email: `staff${nextIndex}@northline.com`,
-        name: locale === 'zh' ? `新员工 ${nextIndex}` : `Team Member ${nextIndex}`,
-      },
-      currentUser,
-    );
+  function openUserSection(userId: string, section: 'details' | 'profile') {
+    selectUser(userId);
+    setPendingScrollTarget(section);
+  }
 
-    setStore(result.store);
-    selectUser(result.user.id);
-    setFeedback({
-      tone: 'success',
-      title: text.inviteSuccess,
-      detail: text.inviteDetail,
-    });
+  async function inviteStaff() {
+    if (typeof window !== 'undefined' && !window.confirm(text.inviteConfirm)) {
+      return;
+    }
+
+    const nextIndex = store.users.length + 1;
+    const email = `staff${nextIndex}@northline.com`;
+    const name = locale === 'zh' ? `新员工 ${nextIndex}` : `Team Member ${nextIndex}`;
+
+    try {
+      const result = await createWorkspaceUser(sessionToken, {
+        email,
+        name,
+        role: 'STAFF',
+      });
+
+      selectUser(result.user.id);
+      await onRefreshWorkspaceData({
+        selections: {
+          userId: result.user.id,
+        },
+      });
+      setFeedback({
+        tone: 'success',
+        title: text.inviteSuccess,
+        detail: `${text.inviteDetail} ${copyByLocale(locale, `Temporary password: ${result.temporaryPassword}`, `临时密码：${result.temporaryPassword}`)}`,
+      });
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        title: text.inviteStaff,
+        detail: error instanceof Error ? error.message : copyByLocale(locale, 'Unable to create this staff account.', '无法创建该员工账号。'),
+      });
+    }
+  }
+
+  async function removeInvitedUser(user: ops.WorkspaceUser) {
+    if (typeof window !== 'undefined' && !window.confirm(text.deleteConfirm)) {
+      return;
+    }
+
+    try {
+      await deleteWorkspaceUser(sessionToken, user.id);
+      await onRefreshWorkspaceData();
+      setFeedback({
+        tone: 'success',
+        title: text.deleteSuccess,
+        detail: text.deleteDetail,
+      });
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        title: text.deleteUser,
+        detail: error instanceof Error ? error.message : copyByLocale(locale, 'Unable to delete this invited account.', '无法删除该受邀账号。'),
+      });
+    }
+  }
+
+  async function saveProfile() {
+    if (!selectedUser) {
+      return;
+    }
+
+    try {
+      await updateWorkspaceUserProfile(sessionToken, selectedUser.id, {
+        name: editName.trim() || undefined,
+        email: editEmail.trim(),
+        password: editPassword.trim() || undefined,
+      });
+      await onRefreshWorkspaceData({
+        selections: {
+          userId: selectedUser.id,
+        },
+      });
+      setEditPassword('');
+      setFeedback({
+        tone: 'success',
+        title: text.profileUpdated,
+        detail: text.profileUpdatedDetail,
+      });
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        title: text.saveProfile,
+        detail: error instanceof Error ? error.message : copyByLocale(locale, 'Unable to update this account.', '无法更新该账号。'),
+      });
+    }
   }
 
   function exportUsers() {
@@ -1992,10 +2301,8 @@ function UserManagementWorkspace({ store, setStore, selections, setSelections, l
     );
   }
 
-  function changeRole(user: ops.WorkspaceUser, nextRole: ops.UserRole) {
-    const nextStore = ops.updateUserRole(store, user.id, nextRole, currentUser);
-
-    if (nextStore === store) {
+  async function changeRole(user: ops.WorkspaceUser, nextRole: ops.UserRole) {
+    if (user.id === currentUser.id && user.role === 'Admin' && nextRole !== 'Admin' && adminCount <= 1) {
       setFeedback({
         tone: 'error',
         title: text.role,
@@ -2004,13 +2311,26 @@ function UserManagementWorkspace({ store, setStore, selections, setSelections, l
       return;
     }
 
-    setStore(nextStore);
-    selectUser(user.id);
-    setFeedback({
-      tone: 'success',
-      title: text.roleUpdated,
-      detail: text.roleUpdatedDetail,
-    });
+    try {
+      await updateWorkspaceUserRole(sessionToken, user.id, nextRole === 'Admin' ? 'ADMIN' : 'STAFF');
+      selectUser(user.id);
+      await onRefreshWorkspaceData({
+        selections: {
+          userId: user.id,
+        },
+      });
+      setFeedback({
+        tone: 'success',
+        title: text.roleUpdated,
+        detail: text.roleUpdatedDetail,
+      });
+    } catch (error) {
+      setFeedback({
+        tone: 'error',
+        title: text.role,
+        detail: error instanceof Error ? error.message : copyByLocale(locale, 'Unable to update this role.', '无法更新该角色。'),
+      });
+    }
   }
 
   return (
@@ -2070,7 +2390,7 @@ function UserManagementWorkspace({ store, setStore, selections, setSelections, l
             </thead>
             <tbody>
               {filteredUsers.map((user) => (
-                <tr key={user.id}>
+                <tr key={user.id} className={selectedUser?.id === user.id ? 'is-selected' : ''}>
                   <td>{user.name}</td>
                   <td>{user.email}</td>
                   <td>
@@ -2081,11 +2401,14 @@ function UserManagementWorkspace({ store, setStore, selections, setSelections, l
                   <td>
                     <StatusChip label={user.status} locale={locale} tone={user.status === 'Active' ? 'positive' : 'muted'} />
                   </td>
-                  <td>{ops.formatShortStamp(user.lastLoginAt, getLocaleTag(locale))}</td>
+                  <td>{user.lastLoginAt ? ops.formatShortStamp(user.lastLoginAt, getLocaleTag(locale)) : '--'}</td>
                   <td>
                     <div className="table-actions">
-                      <button className="table-action" type="button" onClick={() => selectUser(user.id)}>
+                      <button className="table-action" type="button" onClick={() => openUserSection(user.id, 'details')}>
                         {text.view}
+                      </button>
+                      <button className="table-action" type="button" onClick={() => openUserSection(user.id, 'profile')}>
+                        {text.editProfile}
                       </button>
                       {user.role === 'Staff' ? (
                         <button className="table-action table-action--primary" type="button" onClick={() => changeRole(user, 'Admin')}>
@@ -2094,6 +2417,11 @@ function UserManagementWorkspace({ store, setStore, selections, setSelections, l
                       ) : user.id !== currentUser.id || adminCount > 1 ? (
                         <button className="table-action" type="button" onClick={() => changeRole(user, 'Staff')}>
                           {text.makeStaff}
+                        </button>
+                      ) : null}
+                      {user.canDelete ? (
+                        <button className="table-action" type="button" onClick={() => removeInvitedUser(user)}>
+                          {text.deleteUser}
                         </button>
                       ) : null}
                     </div>
@@ -2108,7 +2436,7 @@ function UserManagementWorkspace({ store, setStore, selections, setSelections, l
       </section>
 
       {selectedUser ? (
-        <section className="admin-panel">
+        <section ref={detailPanelRef} className={`admin-panel ${spotlightSection ? 'admin-panel--spotlight' : ''}`}>
           <div className="admin-panel__header">
             <div>
               <p className="section-kicker">{text.selectedUser}</p>
@@ -2132,9 +2460,38 @@ function UserManagementWorkspace({ store, setStore, selections, setSelections, l
               { label: text.appointedBy, value: selectedUser.appointedBy },
               { label: text.appointedAt, value: ops.formatShortStamp(selectedUser.appointedAt, getLocaleTag(locale)) },
               { label: text.permissionsUpdatedAt, value: ops.formatShortStamp(selectedUser.permissionsUpdatedAt, getLocaleTag(locale)) },
-              { label: text.lastLogin, value: ops.formatShortStamp(selectedUser.lastLoginAt, getLocaleTag(locale)) },
+              { label: text.lastLogin, value: selectedUser.lastLoginAt ? ops.formatShortStamp(selectedUser.lastLoginAt, getLocaleTag(locale)) : '--' },
             ]}
           />
+
+          <div className="admin-panel__header admin-panel__header--sub">
+            <div>
+              <p className="section-kicker">{text.profileTitle}</p>
+              <h3>{text.selectedUser}</h3>
+            </div>
+
+            <button className="primary-button" type="button" onClick={saveProfile}>
+              {text.saveProfile}
+            </button>
+          </div>
+
+          <div className="form-grid">
+            <label className="form-field">
+              <span>{text.name}</span>
+              <input ref={profileNameInputRef} className="admin-input" type="text" value={editName} onChange={(event) => setEditName(event.target.value)} />
+            </label>
+
+            <label className="form-field">
+              <span>{text.email}</span>
+              <input className="admin-input" type="email" value={editEmail} onChange={(event) => setEditEmail(event.target.value)} />
+            </label>
+
+            <label className="form-field">
+              <span>{text.password}</span>
+              <input className="admin-input" type="password" value={editPassword} onChange={(event) => setEditPassword(event.target.value)} />
+              <small className="admin-inline-note">{text.passwordHint}</small>
+            </label>
+          </div>
 
           <div className="admin-note-block">
             <strong>{text.role}</strong>
