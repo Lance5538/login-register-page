@@ -90,6 +90,26 @@ enum OcrValidationStatus {
   FAILED
 }
 
+enum DomainEventStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
+  DEAD
+}
+
+enum InventoryPostingType {
+  INBOUND
+  OUTBOUND
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+
 model User {
   id                   String   @id @default(cuid())
   name                 String?
@@ -416,4 +436,55 @@ model OcrExtractionResult {
   @@index([jobId])
   @@index([documentPageId])
   @@index([templateFieldId])
+}
+
+model DomainEvent {
+  id              String            @id @default(cuid())
+  eventType       String
+  aggregateType   String
+  aggregateId     String
+  payload         Json
+  status          DomainEventStatus @default(PENDING)
+  retryCount      Int               @default(0)
+  errorMessage    String?
+  processedAt     DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  maxRetries      Int       @default(3)
+  lastError       String?
+  nextRetryAt     DateTime?
+
+  @@index([eventType])
+  @@index([aggregateType, aggregateId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model InventoryPostingRecord {
+  id          String               @id @default(cuid())
+  eventId     String               @unique
+  orderId     String
+  postingType InventoryPostingType
+  reference   String
+  createdAt   DateTime             @default(now())
+
+  @@unique([orderId, postingType])
+}
+
+model Notification {
+  id          String             @id @default(cuid())
+  eventId     String
+  eventType   String
+  channel     String
+  recipient   String?
+  title       String
+  message     String
+  status      NotificationStatus @default(PENDING)
+  sentAt      DateTime?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([eventId])
+  @@index([eventType])
+  @@index([status])
 }

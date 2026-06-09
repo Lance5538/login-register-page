@@ -2,7 +2,12 @@ import prisma from "../../lib/prisma";
 import { AppError } from "../../shared/errors/app-error";
 import { serializeOutboundOrder } from "../../shared/utils/order-workflow";
 import type { CreateOutboundOrderInput, UpdateOutboundOrderInput } from "./outbound.schemas";
-import { postOutboundInventory } from "../inventory/inventory-posting";
+import { DomainEventService } from "../../event/domain-event.service";
+import {
+  DOMAIN_AGGREGATE_TYPES,
+  DOMAIN_EVENT_TYPES,
+} from "../../event/domain-event.types";
+import { enqueueDomainEvent } from "../../event/domain-event.queue";
 
 function toOrderDate(value: string) {
   const parsedDate = new Date(value);
@@ -194,53 +199,70 @@ export class OutboundService {
     return serializeOutboundOrder(order);
   }
 
-  static async approveOutboundOrder(id: string, actorUserId: string) {
-    return prisma.$transaction(async (tx) => {
-      const order = await tx.outboundOrder.findUnique({
-        where: { id },
-        include: {
-          ...outboundOrderInclude,
-        },
-      });
+static async approveOutboundOrder(id: string, actorUserId: string) {
+  const result = await prisma.$transaction(async (tx) => {
+    const order = await tx.outboundOrder.findUnique({
+      where: { id },
+      include: {
+        ...outboundOrderInclude,
+      },
+    });
 
-      if (!order) {
-        throw new AppError("Outbound order not found", 404);
-      }
+    if (!order) {
+      throw new AppError("Outbound order not found", 404);
+    }
 
-      if (order.approvalStatus === "APPROVED") {
-        return serializeOutboundOrder(order);
-      }
+    if (order.approvalStatus === "APPROVED") {
+      return {
+        order: serializeOutboundOrder(order),
+        eventId: null,
+      };
+    }
 
-      await postOutboundInventory({
-        tx,
+    const approvedAt = new Date();
+
+    const event = await DomainEventService.createEvent(tx, {
+      eventType: DOMAIN_EVENT_TYPES.OUTBOUND_APPROVED,
+      aggregateType: DOMAIN_AGGREGATE_TYPES.OUTBOUND_ORDER,
+      aggregateId: order.id,
+      payload: {
+        outboundNo: order.outboundNo,
         warehouseId: order.warehouseId,
-        createdById: actorUserId,
-        reference: order.outboundNo,
+        approvedById: actorUserId,
         lineItems: order.lineItems.map((lineItem) => ({
           productId: lineItem.productId,
           quantity: lineItem.quantity,
           notes: lineItem.notes,
         })),
-      });
-
-      const approvedAt = new Date();
-      const updatedOrder = await tx.outboundOrder.update({
-        where: { id },
-        data: {
-          status: "SHIPPED",
-          approvalStatus: "APPROVED",
-          approvalReason: "",
-          approvalUpdatedAt: approvedAt,
-          approvedById: actorUserId,
-          appliedAt: approvedAt,
-          confirmedAt: approvedAt,
-        },
-        include: outboundOrderInclude,
-      });
-
-      return serializeOutboundOrder(updatedOrder);
+      },
     });
+
+    const updatedOrder = await tx.outboundOrder.update({
+      where: { id },
+      data: {
+        status: "PENDING_SHIPMENT",
+        approvalStatus: "APPROVED",
+        approvalReason: "",
+        approvalUpdatedAt: approvedAt,
+        approvedById: actorUserId,
+        appliedAt: null,
+        confirmedAt: null,
+      },
+      include: outboundOrderInclude,
+    });
+
+    return {
+      order: serializeOutboundOrder(updatedOrder),
+      eventId: event.id,
+    };
+  });
+
+  if (result.eventId) {
+    await enqueueDomainEvent(result.eventId);
   }
+
+  return result.order;
+}
 
   static async rejectOutboundOrder(id: string, actorUserId: string, reason: string) {
     const order = await prisma.outboundOrder.findUnique({

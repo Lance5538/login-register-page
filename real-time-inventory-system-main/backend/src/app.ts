@@ -7,6 +7,7 @@ import YAML from "yamljs";
 import path from "path";
 import fs from "fs";
 
+
 import authRoutes from "./modules/auth/auth.routes";
 import productRoutes from "./modules/products/product.routes";
 import warehouseRoutes from "./modules/warehouses/warehouse.routes";
@@ -17,6 +18,9 @@ import approvalRoutes from "./modules/approvals/approval.routes";
 import userRoutes from "./modules/users/user.routes";
 import ocrRoutes from "./modules/ocr/ocr.routes";
 import { errorMiddleware } from "./middlewares/error.middleware";
+import eventRoutes from "./event/event.routes";
+import domainEventRoutes from "./event/domain-event.routes";
+import notificationRoutes from "./event/notification.routes";
 
 const app = express();
 
@@ -62,6 +66,9 @@ app.use("/outbounds", outboundRoutes);
 app.use("/approvals", approvalRoutes);
 app.use("/users", userRoutes);
 app.use("/ocr", ocrRoutes);
+app.use("/events", eventRoutes);
+app.use("/events", domainEventRoutes);
+app.use("/notifications", notificationRoutes);
 
 // 一定要放在所有路由后面
 app.use(errorMiddleware);
