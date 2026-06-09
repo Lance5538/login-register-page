@@ -1,10 +1,12 @@
 # Real-Time Inventory Management System
 
-![Node.js](https://img.shields.io/badge/Node.js-20-green)
-![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue)
-![Redis](https://img.shields.io/badge/Redis-7-red)
+![Node.js](https://img.shields.io/badge/Node.js-Backend-green)
+![TypeScript](https://img.shields.io/badge/TypeScript-Language-blue)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-blue)
+![Redis](https://img.shields.io/badge/Redis-Queue-red)
 ![BullMQ](https://img.shields.io/badge/BullMQ-EventDriven-orange)
+![JWT](https://img.shields.io/badge/Auth-JWT-black)
+![Docker](https://img.shields.io/badge/Docker-Container-blue)
 
 ## 📌 Overview
 
