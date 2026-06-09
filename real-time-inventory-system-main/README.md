@@ -65,47 +65,52 @@ The project is intentionally designed as an Event-Driven Modular Monolith to sho
 ---
 ## 🏗️ System Architecture
 
-The system follows an Event-Driven Modular Monolith architecture.
+This project follows an **Event-Driven Modular Monolith** architecture.
+
+Instead of directly updating inventory after an approval action, the system generates domain events which are processed asynchronously through BullMQ and Redis workers.
 
 ### Event Processing Flow
 
 ```text
-Approval Action
-      │
-      ▼
- Domain Event
-      │
-      ▼
- PostgreSQL
-      │
-      ▼
- BullMQ Queue
-      │
-      ▼
- Redis
-      │
-      ▼
- BullMQ Worker
-      │
-      ├──────────────► Inventory Handler
-      │                     │
-      │                     ▼
-      │              Inventory Posting
-      │
-      └──────────────► Notification Consumer
-                            │
-                            ▼
-                      Notification Record
+Inbound / Outbound Approval
+            │
+            ▼
+      Domain Event
+            │
+            ▼
+       PostgreSQL
+            │
+            ▼
+       BullMQ Queue
+            │
+            ▼
+           Redis
+            │
+            ▼
+      BullMQ Worker
+            │
+            ├────────────► Inventory Handler
+            │                     │
+            │                     ▼
+            │              Inventory Posting
+            │
+            └────────────► Notification Consumer
+                                  │
+                                  ▼
+                            Notification
 ```
 
 ### Reliability Features
 
+The system includes several production-inspired reliability mechanisms:
+
 * Retry Processing
 * Dead Event Handling
 * Manual Event Recovery
-* Event Replay
+* Event Replay API
 * Idempotent Inventory Posting
-* Operational Monitoring
+* Event Monitoring APIs
+* Queue-Based Asynchronous Processing
 
 ### Event Lifecycle
 
@@ -115,20 +120,21 @@ PENDING
    ▼
 PROCESSING
    │
-   ├────► PROCESSED
+   ├────────► PROCESSED
    │
-   └────► FAILED
-               │
-               ▼
-           Retry
-               │
-               ▼
-            DEAD
-               │
-               ▼
-      Manual Recovery
+   └────────► FAILED
+                   │
+                   ▼
+                Retry
+                   │
+                   ▼
+                 DEAD
+                   │
+                   ▼
+          Manual Recovery
 
 Replay API
+
 PROCESSED
     │
     ▼
@@ -137,6 +143,36 @@ Replay
     ▼
 Reprocess Safely
 ```
+
+### Event Module
+
+The event module is responsible for:
+
+* Domain Event Creation
+* BullMQ Queue Integration
+* Redis-backed Workers
+* Retry & Recovery Logic
+* Event Replay
+* Notification Generation
+* Operational Monitoring
+
+Key files:
+
+```text
+src/event/
+├── handlers/
+│   ├── inbound-approved.handler.ts
+│   ├── outbound-approved.handler.ts
+│   └── notification.handler.ts
+│
+├── domain-event.queue.ts
+├── domain-event.processor.ts
+├── domain-event.service.ts
+├── domain-event.bull-worker.ts
+├── notification.service.ts
+└── ...
+```
+
 
 ---
 
@@ -210,6 +246,7 @@ real-time-inventory-system/
 │   │   │   ├── inbounds/
 │   │   │   ├── outbounds/
 │   │   │   ├── approvals/
+│   │   │   ├── ocr/
 │   │   │   └── users/
 │   │   │
 │   │   ├── middlewares/
