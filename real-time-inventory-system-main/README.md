@@ -1,57 +1,232 @@
 # Real-Time Inventory Management System
 
 ## 📌 Overview
-This is a full-stack inventory management system designed to demonstrate backend engineering skills, including API design, authentication, database modeling, and system structure.
 
-The system supports product and warehouse management, as well as real-time inventory operations such as stock-in, stock-out, and transfers.
+This project evolved from a traditional CRUD-based inventory system into an event-driven inventory workflow platform designed to demonstrate backend architecture, asynchronous processing, reliability engineering, and workflow orchestration.
+
+The system supports approval-based inbound and outbound inventory operations. Business actions generate domain events which are processed asynchronously through BullMQ and Redis, enabling scalable workflow execution, retry mechanisms, event replay, notification generation, and operational monitoring.
+
+The project is intentionally designed as an Event-Driven Modular Monolith to showcase production-oriented backend engineering practices without introducing unnecessary microservice complexity.
+
 
 ---
 
 ## 🚀 Features
 
-- JWT Authentication
-- Role-based Access Control (ADMIN / STAFF)
-- Product Management (CRUD)
-- Warehouse Management (CRUD)
-- Inventory Operations
-  - Stock In
-  - Stock Out
-  - Transfer Between Warehouses
-- Transaction History Tracking
-- Swagger API Documentation
+### Authentication & Authorization
+
+* JWT Authentication
+* Role-Based Access Control (ADMIN / STAFF)
+
+### Inventory Management
+
+* Product Management
+* Warehouse Management
+* Real-Time Inventory Tracking
+* Stock In
+* Stock Out
+* Transfer Between Warehouses
+
+### Workflow Engine
+
+* Inbound Orders
+* Outbound Orders
+* Approval Workflow
+* Order Status Tracking
+
+### Event-Driven Processing
+
+* Domain Events
+* BullMQ Queue Processing
+* Redis-backed Job Queue
+* Asynchronous Inventory Posting
+* Event Replay API
+* Retry & Failure Recovery
+* Dead Event Handling
+* Idempotent Processing
+
+### Notification System
+
+* Event-Based Notification Generation
+* Notification Query API
+* Event Filtering
+
+### Monitoring & Operations
+
+* Event Monitoring API
+* Event Status Tracking
+* Failure Investigation
+* Operational Visibility
+
+### Documentation
+
+* OpenAPI / Swagger UI
+
+---
+## 🏗️ System Architecture
+
+The system follows an Event-Driven Modular Monolith architecture.
+
+### Event Processing Flow
+
+```text
+Approval Action
+      │
+      ▼
+ Domain Event
+      │
+      ▼
+ PostgreSQL
+      │
+      ▼
+ BullMQ Queue
+      │
+      ▼
+ Redis
+      │
+      ▼
+ BullMQ Worker
+      │
+      ├──────────────► Inventory Handler
+      │                     │
+      │                     ▼
+      │              Inventory Posting
+      │
+      └──────────────► Notification Consumer
+                            │
+                            ▼
+                      Notification Record
+```
+
+### Reliability Features
+
+* Retry Processing
+* Dead Event Handling
+* Manual Event Recovery
+* Event Replay
+* Idempotent Inventory Posting
+* Operational Monitoring
+
+### Event Lifecycle
+
+```text
+PENDING
+   │
+   ▼
+PROCESSING
+   │
+   ├────► PROCESSED
+   │
+   └────► FAILED
+               │
+               ▼
+           Retry
+               │
+               ▼
+            DEAD
+               │
+               ▼
+      Manual Recovery
+
+Replay API
+PROCESSED
+    │
+    ▼
+Replay
+    │
+    ▼
+Reprocess Safely
+```
 
 ---
 
 ## 🧱 Tech Stack
 
 ### Backend
+
 - Node.js
 - Express.js
 - TypeScript
 
-### Database
+### Data Layer
+
 - PostgreSQL
 - Prisma ORM
 
+### Event Processing
+
+- Redis
+- BullMQ
+
+### Infrastructure
+
+- Docker
+- nginx
+
 ### API Documentation
-- OpenAPI (Swagger UI)
+
+- OpenAPI
+- Swagger UI
 
 ---
 
 ## 📂 Project Structure
 
 ```
+## 📂 Project Structure
+
+```text
 real-time-inventory-system/
+│
 ├── backend/
-│   ├── modules/
-│   ├── middlewares/
+│   │
 │   ├── prisma/
+│   │   ├── schema.prisma
+│   │   └── migrations/
+│   │
+│   ├── src/
+│   │   │
+│   │   ├── event/
+│   │   │   ├── handlers/
+│   │   │   │   ├── inbound-approved.handler.ts
+│   │   │   │   ├── outbound-approved.handler.ts
+│   │   │   │   └── notification.handler.ts
+│   │   │   │
+│   │   │   ├── domain-event.queue.ts
+│   │   │   ├── domain-event.processor.ts
+│   │   │   ├── domain-event.service.ts
+│   │   │   ├── domain-event.controller.ts
+│   │   │   ├── domain-event.routes.ts
+│   │   │   ├── domain-event.bull-worker.ts
+│   │   │   ├── notification.service.ts
+│   │   │   ├── notification.controller.ts
+│   │   │   └── notification.routes.ts
+│   │   │
+│   │   ├── modules/
+│   │   │   ├── auth/
+│   │   │   ├── inventory/
+│   │   │   ├── products/
+│   │   │   ├── warehouses/
+│   │   │   ├── inbounds/
+│   │   │   ├── outbounds/
+│   │   │   ├── approvals/
+│   │   │   └── users/
+│   │   │
+│   │   ├── middlewares/
+│   │   ├── shared/
+│   │   ├── lib/
+│   │   ├── app.ts
+│   │   └── server.ts
+│   │
 │   ├── openapi.yaml
-│   └── ...
-├── frontend/ (optional)
+│   ├── package.json
+│   └── tsconfig.json
+│
 ├── docs/
 ├── .gitignore
 └── README.md
+
+
 ```
 
 ---
