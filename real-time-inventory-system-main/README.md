@@ -1,5 +1,11 @@
 # Real-Time Inventory Management System
 
+![Node.js](https://img.shields.io/badge/Node.js-20-green)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue)
+![Redis](https://img.shields.io/badge/Redis-7-red)
+![BullMQ](https://img.shields.io/badge/BullMQ-EventDriven-orange)
+
 ## 📌 Overview
 
 This project evolved from a traditional CRUD-based inventory system into an event-driven inventory workflow platform designed to demonstrate backend architecture, asynchronous processing, reliability engineering, and workflow orchestration.
@@ -208,47 +214,14 @@ src/event/
 
 ## 📂 Project Structure
 
-```
-## 📂 Project Structure
-
 ```text
 real-time-inventory-system/
 │
 ├── backend/
-│   │
 │   ├── prisma/
-│   │   ├── schema.prisma
-│   │   └── migrations/
-│   │
 │   ├── src/
-│   │   │
 │   │   ├── event/
-│   │   │   ├── handlers/
-│   │   │   │   ├── inbound-approved.handler.ts
-│   │   │   │   ├── outbound-approved.handler.ts
-│   │   │   │   └── notification.handler.ts
-│   │   │   │
-│   │   │   ├── domain-event.queue.ts
-│   │   │   ├── domain-event.processor.ts
-│   │   │   ├── domain-event.service.ts
-│   │   │   ├── domain-event.controller.ts
-│   │   │   ├── domain-event.routes.ts
-│   │   │   ├── domain-event.bull-worker.ts
-│   │   │   ├── notification.service.ts
-│   │   │   ├── notification.controller.ts
-│   │   │   └── notification.routes.ts
-│   │   │
 │   │   ├── modules/
-│   │   │   ├── auth/
-│   │   │   ├── inventory/
-│   │   │   ├── products/
-│   │   │   ├── warehouses/
-│   │   │   ├── inbounds/
-│   │   │   ├── outbounds/
-│   │   │   ├── approvals/
-│   │   │   ├── ocr/
-│   │   │   └── users/
-│   │   │
 │   │   ├── middlewares/
 │   │   ├── shared/
 │   │   ├── lib/
@@ -283,7 +256,12 @@ Create a `.env` file based on `.env.example`:
 
 ```env
 DATABASE_URL="postgresql://postgres:password@localhost:5432/inventory_db"
+
 JWT_SECRET="your_jwt_secret"
+
+REDIS_HOST=localhost
+REDIS_PORT=6379
+
 PORT=4000
 ```
 
@@ -292,7 +270,12 @@ PORT=4000
 npx prisma migrate dev
 ```
 
-### 4️⃣ Start the server
+### 4️⃣ Start Redis
+```
+docker run -d -p 6379:6379 redis
+```
+
+### 5️⃣Start the Application
 ```
 npm run dev
 ```
@@ -310,6 +293,53 @@ You can:
 - Test APIs directly
 - Authorize with JWT
 
+---
+---
+## 🧪 API Walkthrough
+
+### Login
+
+```http
+POST /auth/login
+```
+
+### Create Inbound Order
+
+```http
+POST /inbounds
+```
+
+### Approve Order
+
+```http
+POST /approvals/inbound/{id}/approve
+```
+
+### Event Monitoring
+
+```http
+GET /events
+GET /events/{id}
+```
+
+### Retry Failed Event
+
+```http
+POST /events/{id}/retry
+```
+
+### Replay Processed Event
+
+```http
+POST /events/{id}/replay
+```
+
+### Notification Query
+
+```http
+GET /notifications
+GET /notifications?eventType=inbound.approved
+```
 ---
 
 ## 🔑 Authentication
@@ -352,11 +382,11 @@ STAFF  | Read + limited operations
 
 ## 📦 Future Improvements
 
-- Docker support
-- CI/CD pipeline
-- Frontend integration
-- Load balancing & scalability
-- Caching (Redis)
+* OCR Asynchronous Processing Pipeline
+* BullMQ Dashboard Integration
+* CI/CD Pipeline
+* Automated Integration Testing
+* Frontend Operations Dashboard
 
 ---
 
@@ -368,8 +398,15 @@ GitHub: https://github.com/May-rain1989
 
 ## ⭐ Notes
 
-This project is built as a portfolio-level backend system to demonstrate:
-- Clean architecture
-- RESTful API design
-- Authentication & authorization
-- Database consistency and transaction handling
+This project is built as a portfolio-level backend system focused on:
+
+* Event-Driven Architecture
+* Workflow Orchestration
+* Queue-Based Asynchronous Processing
+* Idempotent Event Handling
+* Retry & Recovery Mechanisms
+* Event Replay
+* Operational Monitoring
+* RESTful API Design
+* Authentication & Authorization
+
